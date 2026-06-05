@@ -46,9 +46,13 @@ bool TouchHandler::begin() {
   initialized_ = (error == 0);
 
   if (!initialized_) {
-    Serial.println("[touch] Controller not detected at 0x3B");
+    Serial.printf("[touch] Controller not detected at 0x%02X\n", kAddress);
   } else {
+#if defined(BOARD_AMOLED_18)
+    Serial.println("[touch] Initialized (FT3168)");
+#else
     Serial.println("[touch] Initialized (AXS15231B)");
+#endif
   }
 
   return initialized_;
@@ -84,6 +88,26 @@ void TouchHandler::setUiRotated180(bool rotated180) {
 }
 
 bool TouchHandler::readTouchPacket(uint8_t *buffer, size_t len) {
+#if defined(BOARD_AMOLED_18)
+  // FT3168: set register pointer to 0x02 (TD_STATUS) with a STOP, then read
+  // regs 0x02..0x06 -> [points, X1H, X1L, Y1H, Y1L]. Repeated-start fails on this chip.
+  (void)len;
+  constexpr size_t kFtReadLen = 5;
+  Wire.beginTransmission(kAddress);
+  Wire.write(0x02);
+  if (Wire.endTransmission(true) != 0) {
+    return false;
+  }
+  const size_t readLen =
+      Wire.requestFrom(static_cast<uint8_t>(kAddress), static_cast<size_t>(kFtReadLen), true);
+  if (readLen != kFtReadLen) {
+    return false;
+  }
+  for (size_t i = 0; i < kFtReadLen; ++i) {
+    buffer[i] = Wire.read();
+  }
+  return true;
+#else
   Wire.beginTransmission(kAddress);
   Wire.write(kReadTouchCommand, sizeof(kReadTouchCommand));
   if (Wire.endTransmission(false) != 0) {
@@ -100,6 +124,7 @@ bool TouchHandler::readTouchPacket(uint8_t *buffer, size_t len) {
     buffer[i] = Wire.read();
   }
   return true;
+#endif
 }
 
 bool TouchHandler::poll(TouchEvent &event) {
@@ -130,7 +155,11 @@ bool TouchHandler::poll(TouchEvent &event) {
   }
   consecutiveReadFailures_ = 0;
 
+#if defined(BOARD_AMOLED_18)
+  const uint8_t points = data[0] & 0x0F;  // FT3168 TD_STATUS
+#else
   const uint8_t points = data[1];
+#endif
   if (points == 0 || points >= 5) {
     if (touchActive_) {
       ++emptyTouchSamples_;
@@ -157,6 +186,13 @@ bool TouchHandler::poll(TouchEvent &event) {
   event.touched = true;
   event.gesture = 0;
   event.phase = touchActive_ ? TouchPhase::Move : TouchPhase::Start;
+#if defined(BOARD_AMOLED_18)
+  // FT3168 reports panel-native coordinates directly: X 0..367, Y 0..447.
+  const uint16_t ftX = static_cast<uint16_t>(((data[1] & 0x0F) << 8) | data[2]);
+  const uint16_t ftY = static_cast<uint16_t>(((data[3] & 0x0F) << 8) | data[4]);
+  const uint16_t physicalX = clampPhysicalX(ftX);
+  const uint16_t physicalY = clampPhysicalY(ftY);
+#else
   const uint16_t rawLongAxis = static_cast<uint16_t>(((data[2] & 0x0F) << 8) | data[3]);
   const uint16_t rawShortAxis = static_cast<uint16_t>(((data[4] & 0x0F) << 8) | data[5]);
   const uint16_t physicalX = clampPhysicalX(rawShortAxis);
@@ -164,6 +200,7 @@ bool TouchHandler::poll(TouchEvent &event) {
       clampPhysicalY(rawLongAxis >= BoardConfig::PANEL_NATIVE_HEIGHT
                          ? 0
                          : static_cast<uint16_t>(BoardConfig::PANEL_NATIVE_HEIGHT - 1 - rawLongAxis));
+#endif
 
   switch (uiOrientation_) {
     case BoardConfig::UiOrientation::Portrait:

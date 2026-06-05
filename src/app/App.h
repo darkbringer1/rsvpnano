@@ -82,6 +82,7 @@ class App {
     SettingsHome,
     SettingsDisplay,
     SettingsPacing,
+    SettingsBattery,
     WifiSettings,
     WifiNetworks,
     TextEntry,
@@ -91,6 +92,7 @@ class App {
     RestartConfirm,
     SdCardRepairConfirm,
     UpdateConfirm,
+    PowerOffConfirm,
     FocusTimerGenres,
     FocusTimerSession,
   };
@@ -172,16 +174,21 @@ class App {
   };
 
   void setState(AppState nextState, uint32_t nowMs);
+  void applyStateCpuFrequency();
   void updateState(uint32_t nowMs);
   void updateReader(uint32_t nowMs);
   void updateWpmFeedback(uint32_t nowMs);
+  void updateBrightnessToast(uint32_t nowMs);
   void maybeSaveReadingPosition(uint32_t nowMs);
   void handleBootButton(uint32_t nowMs);
   void handlePowerButton(uint32_t nowMs);
+#if defined(BOARD_AMOLED_18)
+  void handleAmoledButton(uint32_t nowMs);
+#endif
   bool handleStandbyCombo(uint32_t nowMs);
   void toggleMenuFromPowerButton(uint32_t nowMs);
   void openMainMenu(uint32_t nowMs);
-  void cycleBrightness();
+  void cycleBrightness(uint32_t nowMs);
   void cycleThemeMode(uint32_t nowMs);
   void cycleUiLanguage(uint32_t nowMs);
   void cycleReaderMode(uint32_t nowMs);
@@ -196,11 +203,15 @@ class App {
   void handleBatteryProtection(uint32_t nowMs);
   void showLowBatteryWarning(uint32_t nowMs);
   void updateBatteryWarningOverlay(uint32_t nowMs);
+  void updateAutoDim(uint32_t nowMs);
+  void restoreFromAutoDim(uint32_t nowMs);
+  void updateBatteryRuntimeLabel(uint32_t nowMs);
   void handleTouch(uint32_t nowMs);
   void applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs);
   void handleReaderTap(uint16_t x, uint16_t y, uint32_t nowMs);
   bool handleFooterMetricTap(uint16_t x, uint16_t y, uint32_t nowMs);
   bool handleBatteryBadgeTap(uint16_t x, uint16_t y, uint32_t nowMs);
+  void applyScrollConfig();
   bool handlePreviousSentenceTap(uint16_t x, uint16_t y, uint32_t nowMs);
   void requestReaderPauseAtSentenceEnd(uint32_t nowMs);
   void finalizeReaderPause(uint32_t nowMs);
@@ -230,6 +241,12 @@ class App {
   void selectFocusTimerGenre(uint32_t nowMs);
   void openSettings();
   void selectSettingsItem(uint32_t nowMs);
+  void openBatterySettings();
+  void selectBatterySettingsItem(uint32_t nowMs);
+  static String cpuMhzLabel(uint32_t mhz);
+  String autoDimDelayLabel() const;
+  String autoDimBrightnessLabel() const;
+  uint32_t nominalBatteryRuntimeMinutes() const;
   void openWifiSettings();
   void selectWifiSettingsItem(uint32_t nowMs);
   void openTypographyTuning();
@@ -264,6 +281,7 @@ class App {
   String otaOwnerLabel();
   String pacingDelayLabel(uint16_t delayMs) const;
   String firmwareUpdateMenuLabel() const;
+  String firmwareVersionLabel() const;
   String themeModeLabel() const;
   String phantomWordsLabel() const;
   String focusHighlightLabel() const;
@@ -288,6 +306,8 @@ class App {
   void runSdCardCheck(uint32_t nowMs);
   void openUpdateConfirm();
   void selectUpdateConfirmItem(uint32_t nowMs);
+  void openPowerOffConfirm(uint32_t nowMs);
+  void selectPowerOffConfirmItem(uint32_t nowMs);
   void enterCompanionSync(uint32_t nowMs);
   void updateCompanionSync(uint32_t nowMs);
   void exitCompanionSync(uint32_t nowMs);
@@ -296,6 +316,11 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void enterStandby(uint32_t nowMs);
   void exitStandby(uint32_t nowMs);
+  void noteActivity(uint32_t nowMs);
+#if defined(BOARD_AMOLED_18)
+  void updateIdleStandby(uint32_t nowMs);
+  void handleAmoledStandbyWake(uint32_t nowMs);
+#endif
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   void seedStandbyLife(uint32_t nowMs);
@@ -335,6 +360,7 @@ class App {
   void renderRestartConfirm();
   void renderSdCardRepairConfirm();
   void renderUpdateConfirm();
+  void renderPowerOffConfirm();
   void renderFocusTimerGenres();
   void renderFocusTimerSession();
   void renderActiveReader(uint32_t nowMs);
@@ -347,6 +373,9 @@ class App {
   String chapterMenuLabel(size_t chapterIndex) const;
   size_t currentChapterIndex() const;
   String currentChapterLabel() const;
+  String cleanedChapterTitle(const String &raw, const String &fallback) const;
+  const char *chapterLabelPrefKey() const;
+  static bool chapterLabelDefaultForMode(ReaderMode mode);
   String currentFooterMetricLabel() const;
   String currentBatteryLabel() const;
   String footerMetricModeLabel() const;
@@ -399,11 +428,13 @@ class App {
   DisplayManager::TypographyConfig effectiveTypographyConfig() const;
   uint32_t currentReaderContentToken() const;
   String formatFocusTimerRemaining(uint32_t nowMs) const;
+  String formatFocusTimerDuration(uint32_t durationMs) const;
   String focusTimerCountsLabel() const;
   void playFocusTimerCompletionCue();
 
   AppState state_ = AppState::Booting;
   AppState standbyReturnState_ = AppState::Paused;
+  AppState powerOffConfirmReturnState_ = AppState::Paused;
   DisplayManager display_;
   AudioManager audio_;
   FocusTimer focusTimer_;
@@ -424,10 +455,13 @@ class App {
   uint32_t bootStartedMs_ = 0;
   uint32_t lastStateLogMs_ = 0;
   uint32_t wpmFeedbackUntilMs_ = 0;
+  uint32_t brightnessToastUntilMs_ = 0;
   uint32_t lastProgressSaveMs_ = 0;
   uint32_t lastBatterySampleMs_ = 0;
   uint32_t batteryRuntimeAnchorMs_ = 0;
   uint32_t lastScrollAnimationRenderMs_ = 0;
+  uint32_t lastBatteryLabelRefreshMs_ = 0;
+  uint32_t lastUserActivityMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
@@ -452,6 +486,7 @@ class App {
   size_t restartConfirmSelectedIndex_ = 0;
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
   size_t updateConfirmSelectedIndex_ = 0;
+  size_t powerOffConfirmSelectedIndex_ = 0;
   size_t focusTimerGenreSelectedIndex_ = 0;
   uint8_t brightnessLevelIndex_ = 4;
   uint8_t readerFontSizeIndex_ = 0;
@@ -462,6 +497,7 @@ class App {
   size_t typographyPreviewSampleIndex_ = 0;
   MenuScreen menuScreen_ = MenuScreen::Main;
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
+  MenuScreen powerOffConfirmReturnScreen_ = MenuScreen::Main;
   QueueHandle_t otaCheckQueue_ = nullptr;
   std::vector<String> settingsMenuItems_;
   std::vector<String> focusTimerGenreMenuItems_;
@@ -508,6 +544,11 @@ class App {
   TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
+  uint32_t lastMenuTapMs_ = 0;
+  uint32_t lastActivityMs_ = 0;
+  uint16_t lastMenuTapX_ = 0;
+  uint16_t lastMenuTapY_ = 0;
+  bool lastMenuTapValid_ = false;
   bool touchInitialized_ = false;
   bool touchPlayHeld_ = false;
   bool playLocked_ = false;
@@ -530,6 +571,16 @@ class App {
   bool contextViewVisible_ = false;
   bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;
+  bool brightnessToastVisible_ = false;
+  bool autoDimActive_ = false;
+  bool cachedOtaAutoCheck_ = false;
+  uint32_t cpuMhzPlay_ = 160;
+  uint32_t cpuMhzScroll_ = 160;
+  uint32_t cpuMhzPaused_ = 80;
+  uint32_t cpuMhzMenu_ = 80;
+  uint32_t cpuMhzStandby_ = 80;
+  uint8_t autoDimBrightnessPercent_ = 10;
+  uint32_t autoDimDelayMs_ = 60000;
   bool usingStorageBook_ = false;
   bool storageReady_ = false;
   bool pendingBootBookLoad_ = false;
@@ -542,6 +593,7 @@ class App {
   bool readerBatteryVisibleWhilePlaying_ = true;
   bool readerChapterVisibleWhilePlaying_ = false;
   bool readerProgressVisibleWhilePlaying_ = false;
+  bool chapterLabelEnabled_ = true;
   FooterMetricMode footerMetricMode_ = FooterMetricMode::Percentage;
   BatteryLabelMode batteryLabelMode_ = BatteryLabelMode::Percent;
   ScreensaverMode screensaverMode_ = ScreensaverMode::Life;

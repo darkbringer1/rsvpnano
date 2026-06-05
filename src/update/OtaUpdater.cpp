@@ -234,13 +234,18 @@ String versionDetail(const String &currentVersion, const String &latestVersion) 
 
 bool OtaUpdater::loadConfig(Config &config) const {
   config = Config();
+  bool loaded = false;
   for (const char *path : kConfigPaths) {
     if (loadConfigFromPath(path, config)) {
-      return true;
+      loaded = true;
+      break;
     }
   }
 
-  return false;
+  // Enforce the locked source regardless of what any config file contained.
+  config.githubOwner = kLockedOwner;
+  config.githubRepo = kLockedRepo;
+  return loaded;
 }
 
 bool OtaUpdater::isConfigured(const Config &config) const {
@@ -280,10 +285,10 @@ bool OtaUpdater::loadConfigFromPath(const char *path, Config &config) const {
       config.wifiSsid = value;
     } else if (key == "wifi_password") {
       config.wifiPassword = value;
-    } else if (key == "github_owner") {
-      config.githubOwner = value;
-    } else if (key == "github_repo") {
-      config.githubRepo = value;
+    } else if (key == "github_owner" || key == "github_repo") {
+      // OTA source is hard-locked to the fork; ignore any override attempt.
+      Serial.printf("[ota] Ignoring '%s' override; OTA source is locked to %s/%s\n",
+                    key.c_str(), kLockedOwner, kLockedRepo);
     } else if (key == "asset_name") {
       config.assetName = value;
     } else if (key == "auto_check") {

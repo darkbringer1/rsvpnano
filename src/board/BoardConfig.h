@@ -11,6 +11,36 @@ enum class UiOrientation : uint8_t {
   PortraitFlipped,
 };
 
+#if defined(BOARD_AMOLED_18)
+// Waveshare ESP32-S3-Touch-AMOLED-1.8 (SH8601 368x448 QSPI, FT3168 touch).
+constexpr int PIN_BOOT_BUTTON = 0;
+constexpr int PIN_PWR_BUTTON = 18;  // No second hardware button; unused pin held by pull-up.
+constexpr int PIN_BATTERY_ADC = 10;  // Battery is via AXP2101 PMU (deferred); ADC path unused.
+
+constexpr int PIN_LCD_CS = 12;
+constexpr int PIN_LCD_SCLK = 11;
+constexpr int PIN_LCD_DATA0 = 4;
+constexpr int PIN_LCD_DATA1 = 5;
+constexpr int PIN_LCD_DATA2 = 6;
+constexpr int PIN_LCD_DATA3 = 7;
+constexpr int PIN_LCD_RST = -1;       // Reset is driven via the XCA9554 expander, not a GPIO.
+constexpr int PIN_LCD_BACKLIGHT = 8;  // AMOLED has no backlight; value kept for compile only.
+
+constexpr int PANEL_NATIVE_WIDTH = 368;   // physical panel columns (CASET)
+constexpr int PANEL_NATIVE_HEIGHT = 448;  // physical panel rows (PASET)
+// Logical UI is landscape; App always runs Landscape, so DISPLAY = swapped native.
+constexpr int DISPLAY_WIDTH = 448;
+constexpr int DISPLAY_HEIGHT = 368;
+constexpr bool UI_ROTATED_180 = false;
+
+constexpr int PIN_SD_CLK = 2;
+constexpr int PIN_SD_CMD = 1;
+constexpr int PIN_SD_D0 = 3;
+constexpr int PIN_I2C_SDA = 47;  // Wire1 (unused on this board; left harmless).
+constexpr int PIN_I2C_SCL = 48;
+constexpr int PIN_TOUCH_SDA = 15;  // Wire: FT3168 touch + XCA9554 expander share this bus.
+constexpr int PIN_TOUCH_SCL = 14;
+#else
 constexpr int PIN_BOOT_BUTTON = 0;
 constexpr int PIN_PWR_BUTTON = 16;
 constexpr int PIN_BATTERY_ADC = 4;
@@ -37,6 +67,7 @@ constexpr int PIN_I2C_SDA = 47;
 constexpr int PIN_I2C_SCL = 48;
 constexpr int PIN_TOUCH_SDA = 17;
 constexpr int PIN_TOUCH_SCL = 18;
+#endif
 
 constexpr int TCA9554_ADDRESS = 0x20;
 constexpr uint8_t TCA9554_PIN_BATTERY_ADC_ENABLE = 1;

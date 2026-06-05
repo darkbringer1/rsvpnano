@@ -41,6 +41,13 @@ class DisplayManager {
     bool showPreviousSentenceHint;
   };
 
+  struct ScrollConfig {
+    int fontSizeDivisor = 2;   // 1=large, 2=medium, 3=small
+    int letterSpacingPx = 0;   // extra px between characters
+    int wordSpacingPx = 10;    // space between words
+    bool showSearchIcon = false;
+  };
+
   struct LibraryItem {
     String title;
     String subtitle;
@@ -61,11 +68,13 @@ class DisplayManager {
   bool begin();
   void setBatteryLabel(const String &label);
   void setBrightnessPercent(uint8_t percent);
+  void setBrightnessOverlay(const String &text);
   void setDarkMode(bool darkMode);
   void setNightMode(bool nightMode);
   void setUiOrientation(BoardConfig::UiOrientation orientation);
   void setUiRotated180(bool rotated180);
   void setTypographyConfig(const TypographyConfig &config);
+  void setScrollConfig(const ScrollConfig &config);
   TypographyConfig typographyConfig() const;
   bool darkMode() const;
   bool nightMode() const;
@@ -84,7 +93,8 @@ class DisplayManager {
                              uint8_t fontSizeLevel, const String &chapterLabel = "",
                              uint8_t progressPercent = 0, bool showFooter = true,
                              const String &footerStatusLabel = "",
-                             ReaderChrome chrome = ReaderChrome());
+                             ReaderChrome chrome = ReaderChrome(),
+                             const String &overlayText = "");
   void renderPhantomRsvpWordWithWpm(const String &beforeText, const String &word,
                                     const String &afterText, uint8_t fontSizeLevel, uint16_t wpm,
                                     const String &chapterLabel = "",
@@ -155,12 +165,14 @@ class DisplayManager {
   void drawSerifGlyphScaledPercent(int x, int y, char c, uint16_t color, uint8_t scalePercent,
                                    ReaderTypeface typeface);
   void fillVirtualRect(int x, int y, int width, int height, uint16_t color);
-  void drawSerifTextAt(const String &text, int x, int y, uint16_t color, int divisor);
+  void drawSerifTextAt(const String &text, int x, int y, uint16_t color, int divisor,
+                       int letterSpacingPx = 0);
   void drawSerif70TextAt(const String &text, int x, int y, uint16_t color);
   void drawSerifTextScaledAt(const String &text, int x, int y, uint16_t color,
                              uint8_t scalePercent);
   void drawTinyGlyph(int x, int y, char c, uint16_t color, int scale);
   void drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale);
+  void drawTinyTextAt180(const String &text, int x, int y, uint16_t color, int scale);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale);
   void drawTinyTextCentered(const String &text, int y, uint16_t color, int scale, int width,
                             int xOffset);
@@ -169,6 +181,7 @@ class DisplayManager {
                                    int width, int xOffset);
   void drawBatteryBadge();
   void drawBatteryBadge(int logicalWidth, int logicalHeight);
+  void drawBrightnessToastBadge(const String &text);
   void drawPreviousSentenceHint();
   void drawFooter(const String &chapterLabel, const String &statusLabel,
                   const ReaderChrome &chrome);
@@ -201,4 +214,6 @@ class DisplayManager {
   bool tickerPlaybackFrameActive_ = false;
   String lastRenderKey_;
   String batteryLabel_;
+  String brightnessOverlayText_;
+  ScrollConfig scrollConfig_;
 };

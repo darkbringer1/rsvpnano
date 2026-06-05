@@ -24,6 +24,7 @@ static const char *kAppTag = "app";
 constexpr uint32_t kOtaCheckTaskStackBytes = 10240;
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
+constexpr uint32_t kBrightnessToastMs = 1500;
 constexpr uint32_t kPowerOffHoldMs = 1600;
 constexpr uint32_t kPowerOffReleaseWaitMs = 4000;
 constexpr uint32_t kBatterySampleIntervalMs = 180000;
@@ -57,7 +58,7 @@ constexpr uint32_t kUsbTransferExitHoldMs = 1200;
 constexpr size_t kTimeEstimateBlockWords = 256;
 constexpr size_t kTimeEstimateBlocksPerUpdate = 1;
 constexpr uint32_t kTimeEstimateProgressLogMs = 5000;
-constexpr uint32_t kNominalBatteryRuntimeMinutes = 330;
+constexpr uint32_t kNominalBatteryRuntimeMinutes = 450;  // ~7.5h with CPU frequency scaling (Balanced)
 constexpr uint8_t kBatteryDisplayHysteresisPercent = 2;
 constexpr uint8_t kBatteryRuntimeMinDropPercent = 3;
 constexpr uint32_t kBatteryRuntimeMinElapsedMs = 10UL * 60UL * 1000UL;
@@ -72,11 +73,17 @@ constexpr uint8_t kBatteryLowWarningPercent = 5;
 constexpr uint8_t kBatteryCriticalPercent = 1;
 constexpr uint8_t kBatteryCriticalConsecutiveSamples = 2;
 constexpr uint32_t kStandbyWakeGraceMs = 900;
+// Idle timeout that drops the AMOLED board into the standby screensaver. The
+// board has a single button, so there is no PWR+BOOT combo to enter standby;
+// it auto-enters after this much inactivity from Paused/Menu and wakes on any
+// touch or BOOT press.
+constexpr uint32_t kIdleStandbyTimeoutMs = 3UL * 60UL * 1000UL;  // 3 minutes
 constexpr uint32_t kStandbyFrameMs = 160;
 constexpr uint16_t kStandbyLifeCellPixels = 2;
 constexpr uint16_t kStandbyLifeColumns = BoardConfig::DISPLAY_WIDTH / kStandbyLifeCellPixels;
 constexpr uint16_t kStandbyLifeRows = BoardConfig::DISPLAY_HEIGHT / kStandbyLifeCellPixels;
 constexpr uint32_t kChapterTransitionMs = 1400;
+constexpr uint32_t kBatteryLabelRefreshIntervalMs = 60000;  // re-display runtime every 60s
 constexpr uint8_t kBrightnessLevels[] = {40, 55, 70, 85, 100};
 constexpr uint8_t kNightBrightnessLevels[] = {35, 40, 45, 50, 55};
 constexpr size_t kBrightnessLevelCount = sizeof(kBrightnessLevels) / sizeof(kBrightnessLevels[0]);
@@ -149,25 +156,35 @@ enum UpdateConfirmItem : size_t {
   UpdateConfirmItemCount,
 };
 
+enum PowerOffConfirmItem : size_t {
+  PowerOffConfirmNo,
+  PowerOffConfirmYes,
+  PowerOffConfirmItemCount,
+};
+
 constexpr size_t kRestartConfirmHeaderRows = 1;
 constexpr size_t kSdCardRepairConfirmHeaderRows = 1;
 constexpr size_t kUpdateConfirmHeaderRows = 2;
+constexpr size_t kPowerOffConfirmHeaderRows = 1;
 constexpr size_t kSettingsBackIndex = 0;
 constexpr size_t kSettingsHomePacingIndex = 1;
 constexpr size_t kSettingsHomeDisplayIndex = 2;
 constexpr size_t kSettingsHomeTypographyIndex = 3;
 constexpr size_t kSettingsHomeWifiIndex = 4;
-constexpr size_t kSettingsHomeUpdateIndex = 5;
+constexpr size_t kSettingsHomeBatteryIndex = 5;
+constexpr size_t kSettingsHomeUpdateIndex = 6;
+constexpr size_t kSettingsHomeFirmwareVersionIndex = 7;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayHandednessIndex = 3;
-constexpr size_t kSettingsDisplayFooterIndex = 4;
-constexpr size_t kSettingsDisplayBatteryIndex = 5;
-constexpr size_t kSettingsDisplayScreensaverIndex = 6;
-constexpr size_t kSettingsDisplayReaderBatteryIndex = 7;
-constexpr size_t kSettingsDisplayReaderChapterIndex = 8;
-constexpr size_t kSettingsDisplayReaderProgressIndex = 9;
-constexpr size_t kSettingsDisplayLanguageIndex = 10;
+constexpr size_t kSettingsDisplayChapterLabelIndex = 4;
+constexpr size_t kSettingsDisplayFooterIndex = 5;
+constexpr size_t kSettingsDisplayBatteryIndex = 6;
+constexpr size_t kSettingsDisplayScreensaverIndex = 7;
+constexpr size_t kSettingsDisplayReaderBatteryIndex = 8;
+constexpr size_t kSettingsDisplayReaderChapterIndex = 9;
+constexpr size_t kSettingsDisplayReaderProgressIndex = 10;
+constexpr size_t kSettingsDisplayLanguageIndex = 11;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -180,6 +197,14 @@ constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
 constexpr size_t kWifiSettingsForgetIndex = 4;
 constexpr size_t kWifiSettingsOtaOwnerIndex = 5;
+
+constexpr size_t kSettingsBatteryCpuPlayIndex = 1;
+constexpr size_t kSettingsBatteryCpuScrollIndex = 2;
+constexpr size_t kSettingsBatteryCpuPausedIndex = 3;
+constexpr size_t kSettingsBatteryCpuMenuIndex = 4;
+constexpr size_t kSettingsBatteryCpuStandbyIndex = 5;
+constexpr size_t kSettingsBatteryAutoDimDelayIndex = 6;
+constexpr size_t kSettingsBatteryAutoDimLevelIndex = 7;
 
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
@@ -205,6 +230,9 @@ constexpr const char *kPrefScreensaverMode = "scrn_sv";
 constexpr const char *kPrefReaderBatteryVisible = "read_bat";
 constexpr const char *kPrefReaderChapterVisible = "read_ch";
 constexpr const char *kPrefReaderProgressVisible = "read_pct";
+constexpr const char *kPrefChapterLabelEnabled = "ch_lbl_on";   // legacy key (unused)
+constexpr const char *kPrefChapterLabelRsvp = "ch_lbl_rsvp";   // default true
+constexpr const char *kPrefChapterLabelScroll = "ch_lbl_scroll"; // default false
 constexpr const char *kPrefReaderFontSize = "font_size";
 constexpr const char *kPrefReaderTypeface = "typeface";
 constexpr const char *kPrefTypographyFocusHighlight = "type_hlt";
@@ -225,6 +253,23 @@ constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
 constexpr const char *kPrefOtaAuto = "ota_auto";
 constexpr const char *kPrefOtaOwner = "ota_owner";
+constexpr const char *kPrefCpuPlay = "cpu_play";
+constexpr const char *kPrefCpuScroll = "cpu_scroll";
+constexpr const char *kPrefCpuPaused = "cpu_paused";
+constexpr const char *kPrefCpuMenu = "cpu_menu";
+constexpr const char *kPrefCpuStandby = "cpu_stby";
+constexpr const char *kPrefAutoDimLevel = "dim_lvl";
+constexpr const char *kPrefAutoDimDelay = "dim_dly";
+constexpr const char *kPrefTimerDurationByGenre[FocusTimer::kGenreCount] = {
+    "tmr_dur_0",  // Chores
+    "tmr_dur_1",  // RsvpNano (Work)
+    "tmr_dur_2",  // StrengthLabs (Fitness)
+    "tmr_dur_3",  // SelfCare
+    "tmr_dur_4",  // Other
+};
+constexpr const char *kPrefScrollFontSize = "psc_font";
+constexpr const char *kPrefScrollLetterSpacing = "psc_lspc";
+constexpr const char *kPrefScrollWordSpacing = "psc_wspc";
 constexpr size_t kReaderFontSizeCount = 3;
 constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
 constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
@@ -618,6 +663,11 @@ void App::begin() {
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
+  for (uint8_t i = 0; i < FocusTimer::kGenreCount; i++) {
+    focusTimer_.setTouchDurationIndexForGenre(
+        static_cast<FocusTimer::Genre>(i),
+        preferences_.getUChar(kPrefTimerDurationByGenre[i], 0));
+  }
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
@@ -630,6 +680,9 @@ void App::begin() {
           kPrefUiLanguage, static_cast<uint8_t>(uiLanguage_)));
   readerMode_ = readerModeFromSetting(
       preferences_.getUChar(kPrefReaderMode, static_cast<uint8_t>(readerMode_)));
+  // Load chapter label per reading mode (RSVP defaults ON, Scroll defaults OFF)
+  chapterLabelEnabled_ = preferences_.getBool(
+      chapterLabelPrefKey(), chapterLabelDefaultForMode(readerMode_));
   handednessMode_ = handednessModeFromSetting(
       preferences_.getUChar(kPrefHandedness, static_cast<uint8_t>(handednessMode_)));
   readerFontSizeIndex_ = preferences_.getUChar(kPrefReaderFontSize, readerFontSizeIndex_);
@@ -686,6 +739,35 @@ void App::begin() {
       pauseMode_ = PauseMode::SentenceEnd;
       break;
   }
+  {
+    constexpr uint32_t kValidMhz[] = {40, 80, 160, 240};
+    auto loadCpuMhz = [&](const char *key, uint32_t def) -> uint32_t {
+      const uint32_t v = preferences_.getUInt(key, def);
+      for (uint32_t m : kValidMhz) {
+        if (v == m) return v;
+      }
+      return def;
+    };
+    cpuMhzPlay_ = loadCpuMhz(kPrefCpuPlay, cpuMhzPlay_);
+    cpuMhzScroll_ = loadCpuMhz(kPrefCpuScroll, cpuMhzScroll_);
+    cpuMhzPaused_ = loadCpuMhz(kPrefCpuPaused, cpuMhzPaused_);
+    cpuMhzMenu_ = loadCpuMhz(kPrefCpuMenu, cpuMhzMenu_);
+    cpuMhzStandby_ = loadCpuMhz(kPrefCpuStandby, cpuMhzStandby_);
+  }
+  {
+    const uint8_t savedDimLevel =
+        preferences_.getUChar(kPrefAutoDimLevel, autoDimBrightnessPercent_);
+    if (savedDimLevel == 0 || savedDimLevel == 10 || savedDimLevel == 20 || savedDimLevel == 30) {
+      autoDimBrightnessPercent_ = savedDimLevel;
+    }
+  }
+  {
+    const uint32_t savedDimDelay = preferences_.getUInt(kPrefAutoDimDelay, autoDimDelayMs_);
+    if (savedDimDelay == 0 || savedDimDelay == 30000 || savedDimDelay == 60000 ||
+        savedDimDelay == 120000) {
+      autoDimDelayMs_ = savedDimDelay;
+    }
+  }
   pacingLongWordDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingLongMs, kPrefLegacyPacingLong);
   pacingComplexWordDelayMs_ =
@@ -712,12 +794,15 @@ void App::begin() {
       kTypographyGuideGapMin, kTypographyGuideGapMax));
   darkMode_ = preferences_.getBool(kPrefDarkMode, darkMode_);
   nightMode_ = preferences_.getBool(kPrefNightMode, nightMode_);
+  cachedOtaAutoCheck_ = otaAutoCheckEnabled();
   applyHandednessSettings(0, false);
   applyDisplayPreferences(0, false);
   applyTypographySettings(0, false);
+  applyScrollConfig();
   applyPacingSettings();
   bootStartedMs_ = millis();
   lastStateLogMs_ = bootStartedMs_;
+  lastUserActivityMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
   Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
 
@@ -778,11 +863,16 @@ void App::begin() {
 void App::update(uint32_t nowMs) {
   button_.update(nowMs);
   powerButton_.update(nowMs);
+#if defined(BOARD_AMOLED_18)
+  // This board has a single usable hardware button (BOOT). Drive menu access from it.
+  handleAmoledButton(nowMs);
+#else
   const bool standbyComboConsumed = handleStandbyCombo(nowMs);
   if (!standbyComboConsumed) {
     handleBootButton(nowMs);
     handlePowerButton(nowMs);
   }
+#endif
   if (powerOffStarted_) {
     return;
   }
@@ -806,6 +896,12 @@ void App::update(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Standby) {
+#if defined(BOARD_AMOLED_18)
+    handleAmoledStandbyWake(nowMs);
+    if (state_ != AppState::Standby) {
+      return;  // Woke up this frame; resume normal handling next tick.
+    }
+#endif
     handleTouch(nowMs);
     updateStandbyScreensaver(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
@@ -825,8 +921,14 @@ void App::update(uint32_t nowMs) {
   updateReader(nowMs);
   handleTouch(nowMs);
   updateWpmFeedback(nowMs);
+  updateBrightnessToast(nowMs);
+  updateAutoDim(nowMs);
+  updateBatteryRuntimeLabel(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
+#if defined(BOARD_AMOLED_18)
+  updateIdleStandby(nowMs);
+#endif
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
     renderActiveReader(nowMs);
@@ -905,6 +1007,13 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
   state_ = nextState;
 
+  // Any state change counts as user activity and clears auto-dim.
+  lastUserActivityMs_ = nowMs;
+  if (autoDimActive_) {
+    autoDimActive_ = false;
+    display_.setBrightnessPercent(currentBrightnessPercent());
+  }
+
   switch (state_) {
     case AppState::Paused:
       renderActiveReader(nowMs);
@@ -938,9 +1047,48 @@ void App::setState(AppState nextState, uint32_t nowMs) {
     saveReadingPosition(true);
   }
 
+  applyStateCpuFrequency();
+
   ESP_LOGI(kAppTag, "state -> %s", stateName(state_));
   Serial.printf("[app] state -> %s at %lu ms\n", stateName(state_),
                 static_cast<unsigned long>(nowMs));
+}
+
+void App::applyStateCpuFrequency() {
+  // While a background OTA check is running we need the full clock for Wi-Fi/TLS.
+  if (otaCheckInProgress_) {
+    if (getCpuFrequencyMhz() != 240) {
+      setCpuFrequencyMhz(240);
+      Serial.println("[power] CPU -> 240 MHz (OTA active)");
+    }
+    return;
+  }
+
+  uint32_t mhz;
+  switch (state_) {
+    case AppState::Playing:
+      mhz = scrollModeEnabled() ? cpuMhzScroll_ : cpuMhzPlay_;
+      break;
+    case AppState::Paused:
+      // In scroll mode, Paused is the active reading state (manual swipe scrolling).
+      mhz = scrollModeEnabled() ? cpuMhzScroll_ : cpuMhzPaused_;
+      break;
+    case AppState::Menu:
+      mhz = cpuMhzMenu_;
+      break;
+    case AppState::Standby:
+      mhz = cpuMhzStandby_;
+      break;
+    default:
+      // Booting, CompanionSync, UsbTransfer, Sleeping: keep full speed.
+      mhz = 240;
+      break;
+  }
+
+  if (getCpuFrequencyMhz() != mhz) {
+    setCpuFrequencyMhz(mhz);
+    Serial.printf("[power] CPU -> %u MHz (state=%s)\n", mhz, stateName(state_));
+  }
 }
 
 void App::updateState(uint32_t nowMs) {
@@ -1088,6 +1236,62 @@ bool App::handleStandbyCombo(uint32_t nowMs) {
   return false;
 }
 
+#if defined(BOARD_AMOLED_18)
+void App::handleAmoledButton(uint32_t nowMs) {
+  // Single hardware button (BOOT): short press toggles the menu / backs out of a
+  // submenu; long press cycles brightness.
+  if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_ ||
+      state_ == AppState::Standby) {
+    return;
+  }
+
+  if (!bootButtonReleasedSinceBoot_) {
+    if (!button_.isHeld()) {
+      bootButtonReleasedSinceBoot_ = true;
+    }
+    return;
+  }
+
+  if (button_.isHeld() || button_.wasPressedEvent() || button_.wasReleasedEvent()) {
+    noteActivity(nowMs);  // BOOT interaction resets the idle-standby timer.
+  }
+
+  // Full-screen utility pages: a BOOT press exits straight back to the main menu.
+  if (state_ == AppState::UsbTransfer) {
+    if (button_.wasReleasedEvent()) {
+      exitUsbTransfer(nowMs);
+      openMainMenu(nowMs);
+    }
+    return;
+  }
+  if (state_ == AppState::CompanionSync) {
+    if (button_.wasReleasedEvent()) {
+      exitCompanionSync(nowMs);
+      openMainMenu(nowMs);
+    }
+    return;
+  }
+
+  if (button_.isHeld() && !bootButtonLongPressHandled_ &&
+      button_.heldDurationMs(nowMs) >= kThemeToggleHoldMs) {
+    bootButtonLongPressHandled_ = true;
+    cycleBrightness(nowMs);
+    return;
+  }
+
+  if (!button_.wasReleasedEvent()) {
+    return;
+  }
+
+  if (bootButtonLongPressHandled_) {
+    bootButtonLongPressHandled_ = false;
+    return;
+  }
+
+  toggleMenuFromPowerButton(nowMs);
+}
+#endif
+
 void App::handleBootButton(uint32_t nowMs) {
   if (state_ == AppState::Standby) {
     if (!standbyButtonsReleased_ && !button_.isHeld() && !powerButton_.isHeld() &&
@@ -1117,6 +1321,7 @@ void App::handleBootButton(uint32_t nowMs) {
   if (button_.isHeld() && !bootButtonLongPressHandled_ &&
       button_.heldDurationMs(nowMs) >= kThemeToggleHoldMs) {
     bootButtonLongPressHandled_ = true;
+    lastUserActivityMs_ = nowMs;
     cycleThemeMode(nowMs);
     return;
   }
@@ -1131,7 +1336,8 @@ void App::handleBootButton(uint32_t nowMs) {
   }
 
   if (button_.lastHoldDurationMs() < kThemeToggleHoldMs) {
-    cycleBrightness();
+    lastUserActivityMs_ = nowMs;
+    cycleBrightness(nowMs);
   }
 }
 
@@ -1174,7 +1380,7 @@ void App::handlePowerButton(uint32_t nowMs) {
 
   if (powerButton_.isHeld() && nowMs - powerButton_.lastEdgeMs() >= kPowerOffHoldMs) {
     powerButtonLongPressHandled_ = true;
-    enterPowerOff(nowMs);
+    openPowerOffConfirm(nowMs);
     return;
   }
 
@@ -1243,7 +1449,8 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender) {
 
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+        menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
       return;
@@ -1272,7 +1479,8 @@ void App::applyHandednessSettings(uint32_t nowMs, bool rerender) {
 
   if (state_ == AppState::Menu &&
       (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings)) {
+       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+       menuScreen_ == MenuScreen::WifiSettings)) {
     rebuildSettingsMenuItems();
   }
 
@@ -1420,7 +1628,7 @@ void App::applyTypographySettings(uint32_t nowMs, bool rerender) {
   }
 }
 
-void App::cycleBrightness() {
+void App::cycleBrightness(uint32_t nowMs) {
   brightnessLevelIndex_ = static_cast<uint8_t>((brightnessLevelIndex_ + 1) % kBrightnessLevelCount);
   preferences_.putUChar(kPrefBrightness, brightnessLevelIndex_);
   const uint8_t percent = currentBrightnessPercent();
@@ -1428,7 +1636,10 @@ void App::cycleBrightness() {
                 static_cast<unsigned int>(brightnessLevelIndex_ + 1),
                 static_cast<unsigned int>(kBrightnessLevelCount),
                 static_cast<unsigned int>(percent));
-  applyDisplayPreferences(millis());
+  brightnessToastVisible_ = true;
+  brightnessToastUntilMs_ = nowMs + kBrightnessToastMs;
+  display_.setBrightnessOverlay(String(percent) + "%");
+  applyDisplayPreferences(nowMs);
 }
 
 void App::cycleThemeMode(uint32_t nowMs) {
@@ -1455,7 +1666,8 @@ void App::cycleUiLanguage(uint32_t nowMs) {
 
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+        menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
       return;
@@ -1472,8 +1684,16 @@ void App::cycleUiLanguage(uint32_t nowMs) {
 void App::cycleReaderMode(uint32_t nowMs) {
   readerMode_ = nextReaderMode(readerMode_);
   preferences_.putUChar(kPrefReaderMode, static_cast<uint8_t>(readerMode_));
+  // Reload chapter label default for the new mode
+  chapterLabelEnabled_ = preferences_.getBool(
+      chapterLabelPrefKey(), chapterLabelDefaultForMode(readerMode_));
   Serial.printf("[display] reader mode=%s\n", readerModeLabel().c_str());
   invalidateContextPreviewWindow();
+
+  // CPU frequency and battery estimate both depend on reader mode — refresh both immediately.
+  applyStateCpuFrequency();
+  batteryLabel_ = currentBatteryLabel();
+  display_.setBatteryLabel(batteryLabel_);
 
   if (state_ == AppState::Menu) {
     rebuildSettingsMenuItems();
@@ -1669,6 +1889,86 @@ void App::updateBatteryWarningOverlay(uint32_t nowMs) {
   }
 }
 
+void App::updateBrightnessToast(uint32_t nowMs) {
+  if (!brightnessToastVisible_) {
+    return;
+  }
+
+  if (nowMs < brightnessToastUntilMs_) {
+    return;
+  }
+
+  brightnessToastVisible_ = false;
+  display_.setBrightnessOverlay("");
+  applyDisplayPreferences(nowMs);
+}
+
+void App::updateAutoDim(uint32_t nowMs) {
+  // Only dim when the user is idle in Paused or Menu — never during active reading.
+  const bool dimEligible = (state_ == AppState::Paused || state_ == AppState::Menu);
+  if (!dimEligible) {
+    if (autoDimActive_) {
+      restoreFromAutoDim(nowMs);
+    }
+    return;
+  }
+
+  // autoDimDelayMs_ == 0 means auto-dim is disabled.
+  if (autoDimDelayMs_ == 0) {
+    return;
+  }
+
+  if (!autoDimActive_ && lastUserActivityMs_ > 0 &&
+      nowMs - lastUserActivityMs_ >= autoDimDelayMs_) {
+    autoDimActive_ = true;
+    display_.setBrightnessPercent(autoDimBrightnessPercent_);
+    Serial.println("[power] auto-dim active");
+  }
+}
+
+void App::restoreFromAutoDim(uint32_t nowMs) {
+  if (!autoDimActive_) {
+    return;
+  }
+  autoDimActive_ = false;
+  lastUserActivityMs_ = nowMs;
+  display_.setBrightnessPercent(currentBrightnessPercent());
+  Serial.println("[power] auto-dim restored");
+}
+
+void App::updateBatteryRuntimeLabel(uint32_t nowMs) {
+  if (!batteryPresent_ || !batterySampleInitialized_) {
+    return;
+  }
+  if (batteryLabelMode_ != BatteryLabelMode::TimeRemaining) {
+    return;
+  }
+  if (!batteryRuntimeEstimateReady_) {
+    return;
+  }
+  if (nowMs - lastBatteryLabelRefreshMs_ < kBatteryLabelRefreshIntervalMs) {
+    return;
+  }
+  lastBatteryLabelRefreshMs_ = nowMs;
+
+  // Project remaining time forward from the last ADC sample.
+  const uint32_t elapsedSinceSampleMinutes = (nowMs - lastBatterySampleMs_) / 60000UL;
+  const uint32_t projected = batteryRuntimeMinutesRemaining_ > elapsedSinceSampleMinutes
+                                 ? batteryRuntimeMinutesRemaining_ - elapsedSinceSampleMinutes
+                                 : 0;
+  const String nextLabel = formatBatteryTimeRemaining(projected);
+  if (nextLabel == batteryLabel_) {
+    return;
+  }
+  batteryLabel_ = nextLabel;
+  display_.setBatteryLabel(batteryLabel_);
+  if (state_ == AppState::Paused || state_ == AppState::Playing) {
+    renderActiveReader(nowMs);
+  } else if (state_ == AppState::Menu) {
+    renderMenu();
+  }
+}
+
 void App::updateWpmFeedback(uint32_t nowMs) {
   if (!wpmFeedbackVisible_ || state_ != AppState::Paused) {
     return;
@@ -1704,7 +2004,8 @@ DisplayManager::ReaderChrome App::readerChrome() const {
   DisplayManager::ReaderChrome chrome;
   const bool reading = isActivelyReading();
   chrome.showBattery = !reading || readerBatteryVisibleWhilePlaying_;
-  chrome.showChapter = !reading || readerChapterVisibleWhilePlaying_;
+  const bool chapterAllowed = chapterLabelEnabled_ && !scrollModeEnabled();
+  chrome.showChapter = chapterAllowed && (!reading || readerChapterVisibleWhilePlaying_);
   chrome.showProgress = !reading || readerProgressVisibleWhilePlaying_;
   chrome.showPreviousSentenceHint = !contextViewVisible_ || scrollModeEnabled();
   return chrome;
@@ -1906,7 +2207,7 @@ void App::handleTouch(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Booting || state_ == AppState::UsbTransfer ||
-      state_ == AppState::Standby ||
+      state_ == AppState::CompanionSync || state_ == AppState::Standby ||
       state_ == AppState::Sleeping) {
     touch_.cancel();
     pausedTouch_.active = false;
@@ -1918,6 +2219,17 @@ void App::handleTouch(uint32_t nowMs) {
 
   TouchEvent ev;
   if (!touch_.poll(ev)) {
+    return;
+  }
+
+  // Any touch counts as user activity: update idle/auto-dim timers and restore dim if needed.
+  noteActivity(nowMs);
+  if (autoDimActive_) {
+    restoreFromAutoDim(nowMs);
+    // Consume this touch as a wake-up event; cancel outstanding state and skip handling.
+    touch_.cancel();
+    pausedTouch_.active = false;
+    pausedTouchIntent_ = TouchIntent::None;
     return;
   }
 
@@ -2036,7 +2348,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   }
 
   if (pausedTouchIntent_ == TouchIntent::Scrub) {
-    applyScrubTarget(scrubStepsForDrag(deltaX), nowMs);
+    const int hMult = 1;
+    applyScrubTarget(scrubStepsForDrag(deltaX) * hMult, nowMs);
     if (ended) {
       pausedTouch_.active = false;
       pausedTouchIntent_ = TouchIntent::None;
@@ -2060,7 +2373,8 @@ void App::applyPausedTouchGesture(const TouchEvent &event, uint32_t nowMs) {
       return;
     }
 
-    const int wpmDelta = (deltaY < 0) ? 1 : -1;
+    const int vMult = 1;
+    const int wpmDelta = (deltaY < 0) ? vMult : -vMult;
     reader_.adjustWpm(wpmDelta);
     preferences_.putUShort(kPrefWpm, reader_.wpm());
     renderWpmFeedback(nowMs);
@@ -2242,11 +2556,29 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
+    lastMenuTapValid_ = false;  // A scroll cancels any pending double-tap.
     return;
   }
 
   if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
-    selectMenuItem(nowMs);
+    // Selection requires a DOUBLE tap so a short swipe that lands like a tap
+    // does not accidentally open a menu item. A single tap only arms the
+    // window; the second tap nearby and in time confirms the selection.
+    const bool recentTap =
+        lastMenuTapValid_ && nowMs - lastMenuTapMs_ <= kReaderDoubleTapWindowMs &&
+        abs(static_cast<int>(event.x) - static_cast<int>(lastMenuTapX_)) <=
+            static_cast<int>(kReaderDoubleTapSlopPx) &&
+        abs(static_cast<int>(event.y) - static_cast<int>(lastMenuTapY_)) <=
+            static_cast<int>(kReaderDoubleTapSlopPx);
+    if (recentTap) {
+      lastMenuTapValid_ = false;
+      selectMenuItem(nowMs);
+    } else {
+      lastMenuTapValid_ = true;
+      lastMenuTapMs_ = nowMs;
+      lastMenuTapX_ = event.x;
+      lastMenuTapY_ = event.y;
+    }
   }
 }
 
@@ -2275,18 +2607,21 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
   const int deltaY = static_cast<int>(pausedTouch_.lastY) - static_cast<int>(pausedTouch_.startY);
   const int absDeltaX = abs(deltaX);
   const int absDeltaY = abs(deltaY);
-  const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
-                       absDeltaY <= static_cast<int>(kTapSlopPx);
 
-  if (focusTimer_.isActiveTimerRunning() && !focusTimerCancelHoldTriggered_ &&
-      event.phase != TouchPhase::End &&
+  // Touch-and-hold (anywhere in the session) backs out to the genre picker.
+  if (!focusTimerCancelHoldTriggered_ && event.phase != TouchPhase::End &&
       absDeltaX <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       absDeltaY <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       nowMs - pausedTouch_.startMs >= kFocusTimerCancelHoldMs) {
-    focusTimer_.cancelActiveTimer(nowMs);
     pausedTouch_.active = false;
     focusTimerCancelHoldTriggered_ = true;
-    renderFocusTimerSession();
+    focusTimer_.abandon();
+    rebuildFocusTimerGenreMenuItems();
+    focusTimerGenreSelectedIndex_ = focusTimerGenreMenuItems_.size() > 1
+                                        ? kFocusTimerGenreFirstIndex
+                                        : kFocusTimerGenreBackIndex;
+    menuScreen_ = MenuScreen::FocusTimerGenres;
+    renderFocusTimerGenres();
     return;
   }
 
@@ -2301,7 +2636,26 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  (void)tapLike;
+  const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
+                       absDeltaY <= static_cast<int>(kTapSlopPx);
+
+  if (focusTimer_.state() == FocusTimer::State::WaitForTouchStart &&
+      absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
+    focusTimer_.stepTouchDuration(deltaX > 0 ? 1 : -1);
+    const uint8_t genreIdx = static_cast<uint8_t>(focusTimer_.genre());
+    if (genreIdx < FocusTimer::kGenreCount) {
+      preferences_.putUChar(kPrefTimerDurationByGenre[genreIdx], focusTimer_.touchDurationIndex());
+    }
+    renderFocusTimerSession();
+    return;
+  }
+
+  // A tap starts the timer / skips to the next phase.
+  if (tapLike) {
+    focusTimer_.advance(nowMs);
+    renderFocusTimerSession();
+  }
 }
 
 void App::openFocusTimer() {
@@ -2340,16 +2694,19 @@ void App::resetFocusTimer() {
   focusTimerCancelHoldTriggered_ = false;
   pausedTouch_.active = false;
   focusTimerGenreSelectedIndex_ = kFocusTimerGenreBackIndex;
+  applyReaderUiOrientation();
 }
 
 void App::rebuildFocusTimerGenreMenuItems() {
   focusTimerGenreMenuItems_.clear();
   focusTimerGenreMenuItems_.push_back(uiText(UiText::Back));
-  focusTimerGenreMenuItems_.push_back("Chores");
-  focusTimerGenreMenuItems_.push_back("Work");
-  focusTimerGenreMenuItems_.push_back("Fitness");
-  focusTimerGenreMenuItems_.push_back("Self Care");
-  focusTimerGenreMenuItems_.push_back("Other");
+  const FocusTimer::Genre kGenres[] = {
+      FocusTimer::Genre::Chores, FocusTimer::Genre::RsvpNano, FocusTimer::Genre::StrengthLabs,
+      FocusTimer::Genre::SelfCare, FocusTimer::Genre::Other};
+  for (const FocusTimer::Genre genre : kGenres) {
+    focusTimerGenreMenuItems_.push_back(String(FocusTimer::genreLabel(genre)) + "  " +
+                                        String(FocusTimer::workMinutesForGenre(genre)) + "m");
+  }
 
   if (focusTimerGenreSelectedIndex_ >= focusTimerGenreMenuItems_.size()) {
     focusTimerGenreSelectedIndex_ =
@@ -2408,7 +2765,8 @@ void App::moveMenuSelection(int direction) {
   size_t *selectedIndex = &menuSelectedIndex_;
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::WifiSettings) {
     selectedIndex = &settingsSelectedIndex_;
     itemCount = settingsMenuItems_.size();
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
@@ -2432,6 +2790,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::UpdateConfirm) {
     selectedIndex = &updateConfirmSelectedIndex_;
     itemCount = UpdateConfirmItemCount;
+  } else if (menuScreen_ == MenuScreen::PowerOffConfirm) {
+    selectedIndex = &powerOffConfirmSelectedIndex_;
+    itemCount = PowerOffConfirmItemCount;
   } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
     selectedIndex = &focusTimerGenreSelectedIndex_;
     itemCount = focusTimerGenreMenuItems_.size();
@@ -2452,7 +2813,8 @@ void App::moveMenuSelection(int direction) {
 
   renderMenu();
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::WifiSettings) {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     Serial.printf("[wifi] selected=%s\n", wifiNetworkMenuItems_[wifiNetworkSelectedIndex_].title.c_str());
@@ -2485,6 +2847,10 @@ void App::moveMenuSelection(int direction) {
     const String selectedLabel =
         updateConfirmSelectedIndex_ == UpdateConfirmUpdate ? "Update" : "Skip for now";
     Serial.printf("[ota] selected=%s\n", selectedLabel.c_str());
+  } else if (menuScreen_ == MenuScreen::PowerOffConfirm) {
+    const String selectedLabel =
+        powerOffConfirmSelectedIndex_ == PowerOffConfirmYes ? "Yes" : "Cancel";
+    Serial.printf("[power-off] selected=%s\n", selectedLabel.c_str());
   } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
     Serial.printf("[timer] selected genre=%s\n",
                   focusTimerGenreMenuItems_[focusTimerGenreSelectedIndex_].c_str());
@@ -2535,7 +2901,8 @@ void App::moveMenuSelection(int direction) {
 
 void App::selectMenuItem(uint32_t nowMs) {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::WifiSettings) {
     selectSettingsItem(nowMs);
     return;
   }
@@ -2565,6 +2932,10 @@ void App::selectMenuItem(uint32_t nowMs) {
   }
   if (menuScreen_ == MenuScreen::UpdateConfirm) {
     selectUpdateConfirmItem(nowMs);
+    return;
+  }
+  if (menuScreen_ == MenuScreen::PowerOffConfirm) {
+    selectPowerOffConfirmItem(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::FocusTimerGenres) {
@@ -2661,6 +3032,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
         runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
         return;
       }
+      case kSettingsHomeBatteryIndex:
+        openBatterySettings();
+        return;
       default:
         return;
     }
@@ -2668,6 +3042,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::WifiSettings) {
     selectWifiSettingsItem(nowMs);
+    return;
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsBattery) {
+    selectBatterySettingsItem(nowMs);
     return;
   }
 
@@ -2683,7 +3062,7 @@ void App::selectSettingsItem(uint32_t nowMs) {
         cycleThemeMode(nowMs);
         return;
       case kSettingsDisplayBrightnessIndex:
-        cycleBrightness();
+        cycleBrightness(nowMs);
         return;
       case kSettingsDisplayHandednessIndex:
         cycleHandednessMode(nowMs);
@@ -2764,6 +3143,12 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsDisplayLanguageIndex:
         cycleUiLanguage(nowMs);
         return;
+      case kSettingsDisplayChapterLabelIndex:
+        chapterLabelEnabled_ = !chapterLabelEnabled_;
+        preferences_.putBool(chapterLabelPrefKey(), chapterLabelEnabled_);
+        rebuildSettingsMenuItems();
+        renderSettings();
+        return;
       default:
         return;
     }
@@ -2837,6 +3222,112 @@ void App::selectSettingsItem(uint32_t nowMs) {
   renderSettings();
 }
 
+void App::openBatterySettings() {
+  settingsSelectedIndex_ = kSettingsBatteryCpuPlayIndex;
+  menuScreen_ = MenuScreen::SettingsBattery;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::selectBatterySettingsItem(uint32_t nowMs) {
+  (void)nowMs;
+
+  auto cycleCpuMhz = [](uint32_t current) -> uint32_t {
+    if (current <= 80) return 160;
+    if (current <= 160) return 240;
+    return 80;
+  };
+  auto cycleCpuMhzStandby = [](uint32_t current) -> uint32_t {
+    if (current <= 40) return 80;
+    if (current <= 80) return 160;
+    if (current <= 160) return 240;
+    return 40;
+  };
+
+  switch (settingsSelectedIndex_) {
+    case kSettingsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeBatteryIndex;
+      menuScreen_ = MenuScreen::SettingsHome;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsBatteryCpuPlayIndex:
+      cpuMhzPlay_ = cycleCpuMhz(cpuMhzPlay_);
+      preferences_.putUInt(kPrefCpuPlay, cpuMhzPlay_);
+      applyStateCpuFrequency();
+      Serial.printf("[battery] CPU play -> %u MHz\n", cpuMhzPlay_);
+      break;
+    case kSettingsBatteryCpuScrollIndex:
+      cpuMhzScroll_ = cycleCpuMhz(cpuMhzScroll_);
+      preferences_.putUInt(kPrefCpuScroll, cpuMhzScroll_);
+      applyStateCpuFrequency();
+      Serial.printf("[battery] CPU scroll -> %u MHz\n", cpuMhzScroll_);
+      break;
+    case kSettingsBatteryCpuPausedIndex:
+      cpuMhzPaused_ = cycleCpuMhz(cpuMhzPaused_);
+      preferences_.putUInt(kPrefCpuPaused, cpuMhzPaused_);
+      applyStateCpuFrequency();
+      Serial.printf("[battery] CPU paused -> %u MHz\n", cpuMhzPaused_);
+      break;
+    case kSettingsBatteryCpuMenuIndex:
+      cpuMhzMenu_ = cycleCpuMhz(cpuMhzMenu_);
+      preferences_.putUInt(kPrefCpuMenu, cpuMhzMenu_);
+      applyStateCpuFrequency();
+      Serial.printf("[battery] CPU menu -> %u MHz\n", cpuMhzMenu_);
+      break;
+    case kSettingsBatteryCpuStandbyIndex:
+      cpuMhzStandby_ = cycleCpuMhzStandby(cpuMhzStandby_);
+      preferences_.putUInt(kPrefCpuStandby, cpuMhzStandby_);
+      applyStateCpuFrequency();
+      Serial.printf("[battery] CPU standby -> %u MHz\n", cpuMhzStandby_);
+      break;
+    case kSettingsBatteryAutoDimDelayIndex: {
+      if (autoDimDelayMs_ == 0) {
+        autoDimDelayMs_ = 30000;
+      } else if (autoDimDelayMs_ <= 30000) {
+        autoDimDelayMs_ = 60000;
+      } else if (autoDimDelayMs_ <= 60000) {
+        autoDimDelayMs_ = 120000;
+      } else {
+        autoDimDelayMs_ = 0;
+      }
+      preferences_.putUInt(kPrefAutoDimDelay, autoDimDelayMs_);
+      if (autoDimDelayMs_ == 0 && autoDimActive_) {
+        restoreFromAutoDim(nowMs);
+      }
+      Serial.printf("[battery] auto-dim delay -> %s\n", autoDimDelayLabel().c_str());
+      break;
+    }
+    case kSettingsBatteryAutoDimLevelIndex: {
+      if (autoDimBrightnessPercent_ >= 30) {
+        autoDimBrightnessPercent_ = 0;
+      } else if (autoDimBrightnessPercent_ == 0) {
+        autoDimBrightnessPercent_ = 10;
+      } else {
+        autoDimBrightnessPercent_ = static_cast<uint8_t>(autoDimBrightnessPercent_ + 10);
+      }
+      preferences_.putUChar(kPrefAutoDimLevel, autoDimBrightnessPercent_);
+      if (autoDimActive_) {
+        display_.setBrightnessPercent(autoDimBrightnessPercent_);
+      }
+      Serial.printf("[battery] auto-dim level -> %u%%\n",
+                    static_cast<unsigned int>(autoDimBrightnessPercent_));
+      break;
+    }
+    default:
+      return;
+  }
+
+  // Refresh battery bootstrap label to reflect new nominal runtime.
+  if (!batteryRuntimeEstimateReady_) {
+    batteryLabel_ = currentBatteryLabel();
+    display_.setBatteryLabel(batteryLabel_);
+    lastBatteryLabelRefreshMs_ = nowMs;
+  }
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
 void App::openWifiSettings() {
   settingsSelectedIndex_ = configuredWifiSsid().isEmpty() ? kWifiSettingsChooseIndex
                                                           : kWifiSettingsAutoUpdateIndex;
@@ -2861,6 +3352,12 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
       return;
     case kWifiSettingsAutoUpdateIndex:
       preferences_.putBool(kPrefOtaAuto, !otaAutoCheckEnabled());
+      cachedOtaAutoCheck_ = otaAutoCheckEnabled();
+      // Auto OTA toggle affects nominal battery estimate — refresh label if in bootstrap mode.
+      if (!batteryRuntimeEstimateReady_) {
+        batteryLabel_ = currentBatteryLabel();
+        display_.setBatteryLabel(batteryLabel_);
+      }
       rebuildSettingsMenuItems();
       renderSettings();
       return;
@@ -3358,13 +3855,16 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::Display));
     settingsMenuItems_.push_back(uiText(UiText::TypographyTune));
     settingsMenuItems_.push_back("Wi-Fi");
+    settingsMenuItems_.push_back("Battery");
     settingsMenuItems_.push_back(firmwareUpdateMenuLabel());
+    settingsMenuItems_.push_back("Installed: " + firmwareVersionLabel());
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Display mode: " + themeModeLabel());
     settingsMenuItems_.push_back(uiText(UiText::Brightness) + ": " +
                                  String(currentBrightnessPercent()) + "%");
     settingsMenuItems_.push_back("Reader hand: " + handednessLabel());
+    settingsMenuItems_.push_back("Chapter label: " + onOffLabel(chapterLabelEnabled_));
     settingsMenuItems_.push_back("Footer label: " + footerMetricModeLabel());
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
     settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
@@ -3394,12 +3894,33 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Auto OTA: " + String(otaAutoCheckEnabled() ? "On" : "Off"));
     settingsMenuItems_.push_back("Forget network");
     settingsMenuItems_.push_back("OTA Owner: " + otaOwnerLabel());
+  } else if (menuScreen_ == MenuScreen::SettingsBattery) {
+    settingsMenuItems_.push_back(uiText(UiText::Back));
+    settingsMenuItems_.push_back("CPU RSVP mode: " + cpuMhzLabel(cpuMhzPlay_));
+    settingsMenuItems_.push_back("CPU scroll mode: " + cpuMhzLabel(cpuMhzScroll_));
+    settingsMenuItems_.push_back("CPU paused (affects scroll in RSVP): " + cpuMhzLabel(cpuMhzPaused_));
+    settingsMenuItems_.push_back("CPU menu: " + cpuMhzLabel(cpuMhzMenu_));
+    settingsMenuItems_.push_back(
+        "CPU standby: " + cpuMhzLabel(cpuMhzStandby_) +
+        (cpuMhzStandby_ <= 40 ? " (Might affect animations)" : ""));
+    settingsMenuItems_.push_back("Auto-dim delay: " + autoDimDelayLabel());
+    settingsMenuItems_.push_back("Auto-dim brightness level: " + autoDimBrightnessLabel());
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
     settingsSelectedIndex_ = kSettingsBackIndex;
   }
 }
+
+void App::applyScrollConfig() {
+  DisplayManager::ScrollConfig cfg;
+  cfg.fontSizeDivisor = 2;
+  cfg.letterSpacingPx = 0;
+  cfg.wordSpacingPx = 10;
+  cfg.showSearchIcon = false;
+  display_.setScrollConfig(cfg);
+}
+
 
 void App::applyPacingSettings() {
   ReadingLoop::PacingConfig pacingConfig;
@@ -3560,6 +4081,7 @@ void App::pollOtaCheckResult(uint32_t nowMs) {
   OtaCheckResult result;
   while (xQueueReceive(otaCheckQueue_, &result, 0) == pdTRUE) {
     otaCheckInProgress_ = false;
+    applyStateCpuFrequency();
     Serial.printf("[ota] background result code=%u current=%s latest=%s summary=%s detail=%s\n",
                   static_cast<unsigned int>(result.code), result.currentVersion,
                   result.latestVersion, result.summary, result.detail);
@@ -3613,7 +4135,8 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
       delay(1600);
       if (state_ == AppState::Menu &&
           (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-           menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings)) {
+           menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+           menuScreen_ == MenuScreen::WifiSettings)) {
         rebuildSettingsMenuItems();
         renderSettings();
       } else {
@@ -3648,7 +4171,8 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
   delay(1600);
   if (state_ == AppState::Menu &&
       (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings)) {
+       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+       menuScreen_ == MenuScreen::WifiSettings)) {
     rebuildSettingsMenuItems();
     renderSettings();
   } else {
@@ -3684,6 +4208,14 @@ void App::runRssFeedCheck(uint32_t nowMs) {
 String App::pacingDelayLabel(uint16_t delayMs) const { return String(delayMs) + " ms"; }
 
 String App::firmwareUpdateMenuLabel() const { return "Firmware update"; }
+
+String App::firmwareVersionLabel() const {
+#ifdef RSVP_FIRMWARE_VERSION
+  return String(RSVP_FIRMWARE_VERSION);
+#else
+  return "dev";
+#endif
+}
 
 String App::uiText(UiText key) const { return Localization::text(uiLanguage_, key); }
 
@@ -4022,6 +4554,45 @@ void App::selectUpdateConfirmItem(uint32_t nowMs) {
   runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
 }
 
+void App::openPowerOffConfirm(uint32_t nowMs) {
+  powerOffConfirmReturnState_ = state_;
+  powerOffConfirmReturnScreen_ = (state_ == AppState::Menu) ? menuScreen_ : MenuScreen::Main;
+  powerOffConfirmSelectedIndex_ = PowerOffConfirmNo;
+  if (state_ != AppState::Menu) {
+    saveReadingPosition(true);
+  }
+  setState(AppState::Menu, nowMs);
+  menuScreen_ = MenuScreen::PowerOffConfirm;
+  renderPowerOffConfirm();
+}
+
+void App::selectPowerOffConfirmItem(uint32_t nowMs) {
+  if (powerOffConfirmSelectedIndex_ != PowerOffConfirmYes) {
+    Serial.println("[power-off] cancelled by user");
+    const AppState returnState = powerOffConfirmReturnState_;
+    menuScreen_ = powerOffConfirmReturnScreen_;
+    if (returnState == AppState::Menu) {
+      renderMenu();
+    } else {
+      setState(returnState == AppState::Playing ? AppState::Paused : returnState, nowMs);
+    }
+    return;
+  }
+
+  Serial.println("[power-off] confirmed by user");
+  enterPowerOff(nowMs);
+}
+
+void App::renderPowerOffConfirm() {
+  std::vector<String> items;
+  items.reserve(PowerOffConfirmItemCount + kPowerOffConfirmHeaderRows);
+  items.push_back("Power off?");
+  items.push_back("Cancel");
+  items.push_back("Yes");
+
+  display_.renderMenu(items, powerOffConfirmSelectedIndex_ + kPowerOffConfirmHeaderRows);
+}
+
 void App::enterCompanionSync(uint32_t nowMs) {
   if (blockNetworkActionForOtaCheck("Sync", nowMs)) {
     return;
@@ -4275,6 +4846,61 @@ void App::exitStandby(uint32_t nowMs) {
   }
   setState(nextState, nowMs);
 }
+
+void App::noteActivity(uint32_t nowMs) {
+  lastActivityMs_ = nowMs;
+  lastUserActivityMs_ = nowMs;
+}
+
+#if defined(BOARD_AMOLED_18)
+void App::updateIdleStandby(uint32_t nowMs) {
+  // Only the resting states accrue idle time. Reading (Playing) holds activity
+  // alive via continuous touch; utility/sync/boot screens manage their own life.
+  if (state_ != AppState::Paused && state_ != AppState::Menu) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
+  if (lastActivityMs_ == 0) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
+  if (nowMs - lastActivityMs_ >= kIdleStandbyTimeoutMs) {
+    enterStandby(nowMs);
+  }
+}
+
+void App::handleAmoledStandbyWake(uint32_t nowMs) {
+  if (state_ != AppState::Standby) {
+    return;
+  }
+  // Ignore input briefly so the gesture/idle that led here cannot bounce back.
+  if (nowMs - standbyEnteredMs_ < kStandbyWakeGraceMs) {
+    if (touchInitialized_) {
+      TouchEvent drop;
+      touch_.poll(drop);  // Drain so a held touch is not queued as a wake.
+    }
+    return;
+  }
+
+  // Wake on a BOOT press...
+  if (button_.wasReleasedEvent() || button_.wasPressedEvent()) {
+    bootButtonLongPressHandled_ = true;
+    exitStandby(nowMs);
+    noteActivity(nowMs);
+    return;
+  }
+
+  // ...or on any screen touch.
+  if (touchInitialized_) {
+    TouchEvent ev;
+    if (touch_.poll(ev) && ev.touched) {
+      touch_.cancel();
+      exitStandby(nowMs);
+      noteActivity(nowMs);
+    }
+  }
+}
+#endif  // BOARD_AMOLED_18
 
 void App::seedStandbyScreensaver(uint32_t nowMs) {
   if (screensaverMode_ != ScreensaverMode::ScreenOff && standbyScreenOffActive_) {
@@ -4751,7 +5377,9 @@ void App::wakeFromSleep() {
   wpmFeedbackVisible_ = false;
   menuScreen_ = MenuScreen::Main;
   lastStateLogMs_ = nowMs;
+  lastUserActivityMs_ = nowMs;
   state_ = AppState::Paused;
+  applyStateCpuFrequency();
 
   const bool displayReady = display_.wakeFromSleep();
   touchInitialized_ = touch_.begin();
@@ -5052,7 +5680,8 @@ void App::renderMenu() {
   }
 
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::WifiSettings) {
+      menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::WifiSettings) {
     renderSettings();
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     renderWifiNetworks();
@@ -5070,6 +5699,8 @@ void App::renderMenu() {
     renderSdCardRepairConfirm();
   } else if (menuScreen_ == MenuScreen::UpdateConfirm) {
     renderUpdateConfirm();
+  } else if (menuScreen_ == MenuScreen::PowerOffConfirm) {
+    renderPowerOffConfirm();
   } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
     renderFocusTimerGenres();
   } else if (menuScreen_ == MenuScreen::FocusTimerSession) {
@@ -5199,6 +5830,9 @@ void App::renderFocusTimerSession() {
   applyUiOrientation(focusTimer_.uiOrientation());
   const String remainingLabel = formatFocusTimerRemaining(millis());
 
+  const uint8_t workMin = FocusTimer::workMinutesForGenre(focusTimer_.genre());
+  const String cycle = String("Warm 2m / Work ") + workMin + "m / Break 5m\nHold = pick another timer";
+
   switch (focusTimer_.state()) {
     case FocusTimer::State::Unavailable:
       display_.renderFocusTimerScreen("TIMER", "", "", "IMU unavailable");
@@ -5206,15 +5840,19 @@ void App::renderFocusTimerSession() {
     case FocusTimer::State::GenreSelect:
       renderFocusTimerGenres();
       return;
-    case FocusTimer::State::WaitForTouchStart:
-      display_.renderFocusTimerScreen("BEGIN", "", "", "Place on short side");
+    case FocusTimer::State::WaitForTouchStart: {
+      const String durationLabel = formatFocusTimerDuration(focusTimer_.selectedTouchDurationMs());
+      display_.renderFocusTimerScreen("BEGIN", "", durationLabel,
+                                      "Tap or Place to Start\nSwipe to Change", cycle);
       return;
+    }
     case FocusTimer::State::TouchRunning:
-      display_.renderFocusTimerScreen("BEGIN", "", remainingLabel, "",
+      display_.renderFocusTimerScreen("WARM UP", "", remainingLabel, "",
                                       "", focusTimer_.progressPercent(millis()));
       return;
     case FocusTimer::State::WaitAfterTouch:
-      display_.renderFocusTimerScreen("WORK", "", "", "Flip to continue");
+      display_.renderFocusTimerScreen("WORK", "", "",
+                                      "Tap to start work\n(or flip / lay flat to break)", cycle);
       return;
     case FocusTimer::State::WorkRunning:
       display_.renderFocusTimerScreen("WORK", "", remainingLabel, "",
@@ -5225,14 +5863,16 @@ void App::renderFocusTimerSession() {
                                       "", focusTimer_.progressPercent(millis()), true);
       return;
     case FocusTimer::State::WaitAfterWork:
-      display_.renderFocusTimerScreen("BREAK", "", "", "Turn for break", "",
-                                      -1, true);
+      display_.renderFocusTimerScreen("BREAK", "", "",
+                                      "Tap to start a 5m break\n(or flip to keep working)", cycle, -1,
+                                      true);
       return;
     case FocusTimer::State::WaitAfterBreak:
-      display_.renderFocusTimerScreen("WORK", "", "", "Flip to begin");
+      display_.renderFocusTimerScreen("WORK", "", "",
+                                      "Tap to start work\n(or stand on a short side)", cycle);
       return;
     case FocusTimer::State::Cancelled:
-      display_.renderFocusTimerScreen("BEGIN", "", "", "Place to begin again");
+      display_.renderFocusTimerScreen("BEGIN", "", "", "Tap to begin again", cycle);
       return;
     case FocusTimer::State::Complete:
       display_.renderFocusTimerScreen("DONE", "", "", "Session complete");
@@ -5360,11 +6000,32 @@ size_t App::currentChapterIndex() const {
 
 String App::currentChapterLabel() const {
   const size_t chapterIndex = currentChapterIndex();
+  const String fallback = currentBookTitle_.isEmpty() ? uiText(UiText::Start) : currentBookTitle_;
   if (chapterIndex >= chapterMarkers_.size()) {
-    return currentBookTitle_.isEmpty() ? uiText(UiText::Start) : currentBookTitle_;
+    return fallback;
   }
+  return cleanedChapterTitle(chapterMarkers_[chapterIndex].title, fallback);
+}
 
-  return chapterMarkers_[chapterIndex].title;
+String App::cleanedChapterTitle(const String &raw, const String &fallback) const {
+  if (raw.isEmpty()) return fallback;
+  // Strip leading "N." prefix (e.g. "2.EbookTitle" -> "EbookTitle")
+  size_t i = 0;
+  while (i < (size_t)raw.length() && isDigit(raw[i])) i++;
+  if (i > 0 && i < (size_t)raw.length() && raw[i] == '.') {
+    String cleaned = raw.substring(i + 1);
+    cleaned.trim();
+    return cleaned.isEmpty() ? fallback : cleaned;
+  }
+  return raw;
+}
+
+const char *App::chapterLabelPrefKey() const {
+  return (readerMode_ == ReaderMode::Scroll) ? kPrefChapterLabelScroll : kPrefChapterLabelRsvp;
+}
+
+bool App::chapterLabelDefaultForMode(ReaderMode mode) {
+  return mode != ReaderMode::Scroll;
 }
 
 String App::currentFooterMetricLabel() const {
@@ -5465,12 +6126,62 @@ String App::batteryTimeRemainingLabel() const {
     return formatBatteryTimeRemaining(batteryRuntimeMinutesRemaining_);
   }
 
+  const uint32_t nominal = nominalBatteryRuntimeMinutes();
   const uint32_t estimatedMinutes =
-      (static_cast<uint32_t>(batteryDisplayedPercent_) * kNominalBatteryRuntimeMinutes) / 100UL;
+      (static_cast<uint32_t>(batteryDisplayedPercent_) * nominal) / 100UL;
   return formatBatteryTimeRemaining(estimatedMinutes);
 }
 
 String App::batteryVoltageLabel() const { return String(batteryFilteredVoltage_, 2) + "V"; }
+
+uint32_t App::nominalBatteryRuntimeMinutes() const {
+  // Weighted estimate: play CPU dominates (~60%), others contribute ~10% each.
+  // Base at 160 MHz play = 450 min.
+  auto mhzFactor = [](uint32_t mhz) -> int32_t {
+    if (mhz <= 80) return 90;    // extra minutes saved vs 160
+    if (mhz >= 240) return -60;  // extra minutes lost vs 160
+    return 0;
+  };
+  int32_t base = static_cast<int32_t>(kNominalBatteryRuntimeMinutes);  // 450 min at 160 MHz
+  // Weight only the CPUs that are actually applied in the current mode by applyStateCpuFrequency().
+  // Scroll mode: both Playing and Paused use cpuMhzScroll_ — cpuMhzPlay_/cpuMhzPaused_ unused.
+  // RSVP mode:   Playing→cpuMhzPlay_, Paused→cpuMhzPaused_ — cpuMhzScroll_ unused.
+  // Menu and Standby apply in both modes.
+  if (scrollModeEnabled()) {
+    base += static_cast<int32_t>(mhzFactor(cpuMhzScroll_));
+  } else {
+    base += static_cast<int32_t>(mhzFactor(cpuMhzPlay_));
+    base += static_cast<int32_t>(mhzFactor(cpuMhzPaused_)) / 4;
+  }
+  base += static_cast<int32_t>(mhzFactor(cpuMhzMenu_)) / 4;
+  base += static_cast<int32_t>(mhzFactor(cpuMhzStandby_)) / 4;
+  if (!cachedOtaAutoCheck_) {
+    base += 20;
+  }
+  return static_cast<uint32_t>(base < 60 ? 60 : base);
+}
+
+String App::cpuMhzLabel(uint32_t mhz) {
+  return String(mhz) + " MHz";
+}
+
+String App::autoDimDelayLabel() const {
+  if (autoDimDelayMs_ == 0) {
+    return "Off";
+  }
+  if (autoDimDelayMs_ <= 30000) {
+    return "30s";
+  }
+  if (autoDimDelayMs_ <= 60000) {
+    return "60s";
+  }
+  return "2min";
+}
+
+String App::autoDimBrightnessLabel() const {
+  if (autoDimBrightnessPercent_ == 0) return "Screen off";
+  return String(autoDimBrightnessPercent_) + "%";
+}
 
 String App::formatBatteryTimeRemaining(uint32_t minutes) const {
   if (minutes < 1) {
@@ -5742,6 +6453,17 @@ void App::applyReaderUiOrientation() {
 BoardConfig::UiOrientation App::readerUiOrientation() const {
   return uiRotated180() ? BoardConfig::UiOrientation::LandscapeFlipped
                         : BoardConfig::UiOrientation::Landscape;
+}
+
+String App::formatFocusTimerDuration(uint32_t durationMs) const {
+  const uint32_t totalSeconds = durationMs / 1000UL;
+  const uint32_t minutes = totalSeconds / 60UL;
+  const uint32_t seconds = totalSeconds % 60UL;
+  char buffer[8];
+  std::snprintf(buffer, sizeof(buffer), "%02lu:%02lu",
+                static_cast<unsigned long>(minutes),
+                static_cast<unsigned long>(seconds));
+  return String(buffer);
 }
 
 String App::formatFocusTimerRemaining(uint32_t nowMs) const {
@@ -6066,6 +6788,7 @@ void App::invalidateContextPreviewWindow() {
 
 void App::renderContextPreview() {
   applyReaderUiOrientation();
+  applyScrollConfig();
   const size_t wordCount = reader_.wordCount();
   if (wordCount == 0) {
     renderReaderWord();
@@ -6085,6 +6808,7 @@ void App::renderContextPreview() {
 
 void App::renderScrollReader(uint32_t nowMs, const String &overlayText) {
   applyReaderUiOrientation();
+  applyScrollConfig();
   contextViewVisible_ = false;
   const size_t wordCount = reader_.wordCount();
   if (wordCount == 0) {
@@ -6105,10 +6829,12 @@ void App::renderScrollReader(uint32_t nowMs, const String &overlayText) {
     }
   }
 
+  String effectiveOverlay = overlayText;
+
   const DisplayManager::ReaderChrome chrome = readerChrome();
   display_.renderScrollView(contextPreviewWords_, currentReaderContentToken(),
                             contextPreviewStartIndex_, currentIndex, scrollProgressPermille,
-                            currentChapterLabel(), readingProgressPercent(), overlayText,
+                            currentChapterLabel(), readingProgressPercent(), effectiveOverlay,
                             readerFooterStatusLabel(), chrome);
 }
 
