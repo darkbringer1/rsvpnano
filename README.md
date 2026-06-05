@@ -328,7 +328,9 @@ The Focus Timer uses the device orientation to guide work and break blocks.
 4. Follow the on-screen timer.
 5. Hold `PWR` to exit the timer page.
 
-Touch-and-hold during an active timer cancels the current timer block. Timer settings are saved per genre/category.
+Short audio cues mark timer starts, phase completions, and cancellation. Touch-and-hold
+during an active timer cancels the current timer block. Timer settings are saved per
+genre/category.
 
 ### SD Card Check
 
@@ -428,6 +430,7 @@ web/firmware/manifest.json
 
 **Focus Timer:**
 - Configurable timer duration per category/genre (settings persist across sessions).
+- Audio cues for timer start, warm-up/work/break completion, and cancellation.
 
 Earlier `v0.1.x-noogi` releases introduced the battery optimization framework, fixed settings menu scrolling, and added these granular controls.
 

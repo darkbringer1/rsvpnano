@@ -2613,6 +2613,7 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
       nowMs - pausedTouch_.startMs >= kFocusTimerCancelHoldMs) {
     pausedTouch_.active = false;
     focusTimerCancelHoldTriggered_ = true;
+    playFocusTimerCue(FocusTimer::Cue::Cancelled);
     focusTimer_.abandon();
     rebuildFocusTimerGenreMenuItems();
     focusTimerGenreSelectedIndex_ = focusTimerGenreMenuItems_.size() > 1
@@ -2674,9 +2675,7 @@ void App::updateFocusTimer(uint32_t nowMs) {
   }
 
   focusTimer_.update(nowMs);
-  if (focusTimer_.consumeCompletionCue()) {
-    playFocusTimerCompletionCue();
-  }
+  playFocusTimerCue(focusTimer_.consumeCue());
   if (focusTimer_.state() == FocusTimer::State::GenreSelect) {
     menuScreen_ = MenuScreen::FocusTimerGenres;
     rebuildFocusTimerGenreMenuItems();
@@ -6449,12 +6448,40 @@ String App::focusTimerCountsLabel() const {
          String(focusTimer_.completedBreakBlocks());
 }
 
-void App::playFocusTimerCompletionCue() {
-  if (audio_.beep()) {
+void App::playFocusTimerCue(FocusTimer::Cue cue) {
+  if (cue == FocusTimer::Cue::None) {
     return;
   }
 
-  for (int i = 0; i < 3; ++i) {
+  bool played = false;
+  switch (cue) {
+    case FocusTimer::Cue::Start:
+      played = audio_.tone(1040, 55, 9000);
+      break;
+    case FocusTimer::Cue::TouchComplete:
+      played = audio_.tone(1320, 80) && (delay(45), audio_.tone(1560, 80));
+      break;
+    case FocusTimer::Cue::WorkComplete:
+      played = audio_.tone(1560, 90) && (delay(45), audio_.tone(1320, 90)) &&
+               (delay(45), audio_.tone(1560, 110));
+      break;
+    case FocusTimer::Cue::BreakComplete:
+      played = audio_.tone(880, 90) && (delay(45), audio_.tone(1040, 100));
+      break;
+    case FocusTimer::Cue::Cancelled:
+      played = audio_.tone(440, 120, 9000);
+      break;
+    case FocusTimer::Cue::None:
+    default:
+      return;
+  }
+
+  if (played) {
+    return;
+  }
+
+  const int flashCount = cue == FocusTimer::Cue::Start ? 1 : cue == FocusTimer::Cue::Cancelled ? 2 : 3;
+  for (int i = 0; i < flashCount; ++i) {
     digitalWrite(BoardConfig::PIN_LCD_BACKLIGHT, HIGH);
     delay(55);
     digitalWrite(BoardConfig::PIN_LCD_BACKLIGHT, LOW);

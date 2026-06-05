@@ -30,6 +30,15 @@ class FocusTimer {
     Complete,
   };
 
+  enum class Cue : uint8_t {
+    None = 0,
+    Start,
+    TouchComplete,
+    WorkComplete,
+    BreakComplete,
+    Cancelled,
+  };
+
   static constexpr uint8_t kGenreCount = 5;
 
   bool begin();
@@ -56,6 +65,7 @@ class FocusTimer {
   uint8_t completedTouchBlocks() const;
   uint8_t completedWorkBlocks() const;
   uint8_t completedBreakBlocks() const;
+  Cue consumeCue();
   bool consumeCompletionCue();
 
   static const char *genreLabel(Genre genre);
@@ -118,7 +128,7 @@ class FocusTimer {
   uint32_t timerStartedMs_ = 0;
   uint32_t timerDurationMs_ = 0;
   bool timerRunning_ = false;
-  bool completionCuePending_ = false;
+  Cue pendingCue_ = Cue::None;
   uint8_t completedTouchBlocks_ = 0;
   uint8_t completedWorkBlocks_ = 0;
   uint8_t completedBreakBlocks_ = 0;

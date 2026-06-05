@@ -233,6 +233,7 @@ void FocusTimer::cancelActiveTimer(uint32_t nowMs) {
   stopActiveTimer();
   resetOrientationStability();
   feedbackStartedMs_ = nowMs;
+  pendingCue_ = Cue::Cancelled;
   transitionTo(State::Cancelled, nowMs);
 }
 
@@ -302,10 +303,14 @@ uint8_t FocusTimer::completedWorkBlocks() const { return completedWorkBlocks_; }
 
 uint8_t FocusTimer::completedBreakBlocks() const { return completedBreakBlocks_; }
 
+FocusTimer::Cue FocusTimer::consumeCue() {
+  const Cue cue = pendingCue_;
+  pendingCue_ = Cue::None;
+  return cue;
+}
+
 bool FocusTimer::consumeCompletionCue() {
-  const bool pending = completionCuePending_;
-  completionCuePending_ = false;
-  return pending;
+  return consumeCue() != Cue::None;
 }
 
 uint8_t FocusTimer::workMinutesForGenre(Genre genre) {
@@ -587,7 +592,7 @@ void FocusTimer::clearSession() {
   timerDurationMs_ = 0;
   timerRunning_ = false;
   feedbackStartedMs_ = 0;
-  completionCuePending_ = false;
+  pendingCue_ = Cue::None;
   completedTouchBlocks_ = 0;
   completedWorkBlocks_ = 0;
   completedBreakBlocks_ = 0;
@@ -601,6 +606,7 @@ void FocusTimer::startMode(TimerMode mode, uint32_t nowMs, uint32_t durationMs,
   timerStartedMs_ = nowMs;
   timerDurationMs_ = durationMs;
   timerRunning_ = true;
+  pendingCue_ = Cue::Start;
 
   if (isShortSide(startOrientation)) {
     lastShortSide_ = startOrientation;
@@ -621,15 +627,19 @@ void FocusTimer::completeActiveTimer() {
     return;
   }
 
+  Cue cue = Cue::None;
   switch (activeMode_) {
     case TimerMode::Touch:
       ++completedTouchBlocks_;
+      cue = Cue::TouchComplete;
       break;
     case TimerMode::Work:
       ++completedWorkBlocks_;
+      cue = Cue::WorkComplete;
       break;
     case TimerMode::Break:
       ++completedBreakBlocks_;
+      cue = Cue::BreakComplete;
       break;
     case TimerMode::None:
     default:
@@ -641,7 +651,7 @@ void FocusTimer::completeActiveTimer() {
   activeStartOrientation_ = OrientationState::Unknown;
   timerStartedMs_ = 0;
   timerDurationMs_ = 0;
-  completionCuePending_ = true;
+  pendingCue_ = cue;
 }
 
 bool FocusTimer::timerExpired(uint32_t nowMs) const {

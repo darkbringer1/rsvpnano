@@ -139,9 +139,12 @@ shutdown won't actually cut power. Harmless without a battery; revisit when audi
 OTA updates are **hard-locked** to `darkbringer1/rsvpnano`:
 
 - `OtaUpdater::kLockedOwner` / `kLockedRepo` (`src/update/OtaUpdater.h`).
-- `github_owner` / `github_repo` keys in `/config/ota.conf` are **ignored** (a
-  warning is logged), and `loadConfig` force-overrides them after parsing.
-- Only `asset_name`, Wi-Fi credentials, and `auto_check` remain configurable.
+- `github_owner`, `github_repo`, and `asset_name` keys in `/config/ota.conf` are
+  **ignored** (a warning is logged), and `loadConfig` force-overrides them after
+  parsing.
+- Release tags must use a simple `v...` format, the asset URL must match this
+  repo and tag, and redirects are only accepted from GitHub's release asset CDN.
+- Only Wi-Fi credentials and `auto_check` remain configurable.
 
 **Why:** the AMOLED port runs different hardware than upstream. Pulling a foreign
 firmware image over OTA would flash a bar-board build and re-brick the display.

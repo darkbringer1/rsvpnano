@@ -25,6 +25,8 @@ constexpr const char *kStatusTitle = "OTA";
 const char *kRedirectHeaderKeys[] = {
     "Location",
 };
+constexpr const char *kGithubDownloadHost = "github.com";
+constexpr const char *kGithubReleaseAssetsHost = "release-assets.githubusercontent.com";
 
 bool isAsciiWhitespace(char c) {
   switch (c) {
@@ -168,6 +170,68 @@ bool extractAssetDownloadUrl(const String &json, const String &assetName, String
   }
 
   return false;
+}
+
+bool isSafeReleaseTag(const String &tagName) {
+  if (!tagName.startsWith("v") || tagName.length() < 2 || tagName.length() > 40) {
+    return false;
+  }
+
+  for (size_t i = 0; i < tagName.length(); ++i) {
+    const char c = tagName[i];
+    const bool allowed = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                         (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '_';
+    if (!allowed) {
+      return false;
+    }
+  }
+
+  return tagName.indexOf("..") < 0;
+}
+
+bool hasHttpsHost(const String &url, const char *host) {
+  const String prefix = "https://" + String(host);
+  if (!url.startsWith(prefix)) {
+    return false;
+  }
+
+  if (url.length() == prefix.length()) {
+    return true;
+  }
+
+  return url[prefix.length()] == '/';
+}
+
+bool hasControlChars(const String &value) {
+  for (size_t i = 0; i < value.length(); ++i) {
+    const char c = value[i];
+    if (c == '\r' || c == '\n' || c == '\t' || c == '\0') {
+      return true;
+    }
+  }
+  return false;
+}
+
+String expectedGithubAssetUrl(const String &tagName) {
+  return String("https://") + kGithubDownloadHost + "/" + OtaUpdater::kLockedOwner + "/" +
+         OtaUpdater::kLockedRepo + "/releases/download/" + tagName + "/" +
+         OtaUpdater::kLockedAssetName;
+}
+
+bool isExpectedGithubAssetUrl(const String &url, const String &tagName) {
+  return !hasControlChars(url) && isSafeReleaseTag(tagName) && url == expectedGithubAssetUrl(tagName);
+}
+
+bool isAllowedResolvedAssetUrl(const String &url, const String &tagName) {
+  if (hasControlChars(url)) {
+    return false;
+  }
+
+  if (isExpectedGithubAssetUrl(url, tagName)) {
+    return true;
+  }
+
+  return hasHttpsHost(url, kGithubReleaseAssetsHost);
 }
 
 String readBodyLimited(HTTPClient &http, size_t maxBytes) {
@@ -368,10 +432,18 @@ bool OtaUpdater::fetchLatestRelease(const Config &config, LatestRelease &release
     errorDetail = "Release tag missing";
     return false;
   }
+  if (!isSafeReleaseTag(release.tagName)) {
+    errorDetail = "Release tag rejected";
+    return false;
+  }
 
   if (!extractAssetDownloadUrl(body, config.assetName, release.assetUrl) ||
       release.assetUrl.isEmpty()) {
     errorDetail = config.assetName + " missing";
+    return false;
+  }
+  if (!isExpectedGithubAssetUrl(release.assetUrl, release.tagName)) {
+    errorDetail = "Unexpected asset URL";
     return false;
   }
 
@@ -400,6 +472,11 @@ bool OtaUpdater::resolveDownloadUrl(const String &assetUrl, const String &versio
   http.addHeader("Accept", "application/octet-stream");
   const int statusCode = http.GET();
   if (statusCode == HTTP_CODE_OK) {
+    if (!isAllowedResolvedAssetUrl(assetUrl, version)) {
+      errorDetail = "Asset host rejected";
+      http.end();
+      return false;
+    }
     resolvedUrl = assetUrl;
     http.end();
     return true;
@@ -411,6 +488,10 @@ bool OtaUpdater::resolveDownloadUrl(const String &assetUrl, const String &versio
     resolvedUrl = http.header("Location");
     http.end();
     if (!resolvedUrl.isEmpty()) {
+      if (!isAllowedResolvedAssetUrl(resolvedUrl, version)) {
+        errorDetail = "Redirect host rejected";
+        return false;
+      }
       return true;
     }
     errorDetail = "Asset redirect missing";

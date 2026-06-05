@@ -1,5 +1,6 @@
 #include "audio/AudioManager.h"
 
+#include <algorithm>
 #include <Wire.h>
 #include <driver/i2s.h>
 #include <esp_log.h>
@@ -50,8 +51,6 @@ constexpr uint8_t kEs8311ChipId2RegFE = 0xFE;
 
 constexpr uint8_t kEs8311DacVolumeMax = 0xFF;
 constexpr uint32_t kAudioStartupDelayMs = 15;
-constexpr uint32_t kBeepFrequencyHz = 1320;
-constexpr int16_t kBeepAmplitude = 12000;
 constexpr uint32_t kEnvelopeAttackMs = 6;
 constexpr uint32_t kEnvelopeReleaseMs = 12;
 
@@ -61,8 +60,6 @@ bool AudioManager::begin() {
   if (available_) {
     return true;
   }
-
-  fillBeepBuffer();
 
   if (!enableAudioRail()) {
     ESP_LOGW(kTag, "Audio rail unavailable");
@@ -82,11 +79,20 @@ bool AudioManager::begin() {
 }
 
 bool AudioManager::beep() {
+  return tone(kDefaultBeepFrequencyHz, kDefaultBeepDurationMs, kDefaultToneAmplitude);
+}
+
+bool AudioManager::tone(uint32_t frequencyHz, uint32_t durationMs) {
+  return tone(frequencyHz, durationMs, kDefaultToneAmplitude);
+}
+
+bool AudioManager::tone(uint32_t frequencyHz, uint32_t durationMs, int16_t amplitude) {
   if (!prepareForBeep()) {
     return false;
   }
 
-  if (writeBeepBuffer()) {
+  const size_t frames = fillToneBuffer(frequencyHz, durationMs, amplitude);
+  if (writeToneBuffer(frames)) {
     return true;
   }
 
@@ -95,7 +101,7 @@ bool AudioManager::beep() {
     return false;
   }
 
-  return writeBeepBuffer();
+  return writeToneBuffer(frames);
 }
 
 bool AudioManager::available() const { return available_; }
@@ -307,10 +313,14 @@ bool AudioManager::recoverOutputPath() {
   return true;
 }
 
-bool AudioManager::writeBeepBuffer() {
-  const uint8_t *data = reinterpret_cast<const uint8_t *>(beepBuffer_);
+bool AudioManager::writeToneBuffer(size_t frames) {
+  if (frames == 0 || frames > kMaxToneFrames) {
+    return false;
+  }
+
+  const uint8_t *data = reinterpret_cast<const uint8_t *>(toneBuffer_);
   size_t totalWritten = 0;
-  const size_t totalSize = sizeof(beepBuffer_);
+  const size_t totalSize = frames * 2U * sizeof(int16_t);
 
   while (totalWritten < totalSize) {
     size_t bytesWritten = 0;
@@ -368,24 +378,36 @@ bool AudioManager::writeCodecRegister(uint8_t reg, uint8_t value) {
   return Wire1.endTransmission(true) == 0;
 }
 
-void AudioManager::fillBeepBuffer() {
+size_t AudioManager::fillToneBuffer(uint32_t frequencyHz, uint32_t durationMs, int16_t amplitude) {
+  if (frequencyHz == 0) {
+    frequencyHz = kDefaultBeepFrequencyHz;
+  }
+  if (durationMs == 0) {
+    durationMs = kDefaultBeepDurationMs;
+  }
+
+  const size_t frames = std::min(
+      kMaxToneFrames,
+      (static_cast<size_t>(kSampleRateHz) * static_cast<size_t>(durationMs)) / 1000U);
   const size_t attackFrames = (static_cast<size_t>(kSampleRateHz) * kEnvelopeAttackMs) / 1000U;
   const size_t releaseFrames = (static_cast<size_t>(kSampleRateHz) * kEnvelopeReleaseMs) / 1000U;
-  const uint32_t halfPeriodSamples = kSampleRateHz / (kBeepFrequencyHz * 2U);
+  const uint32_t halfPeriodSamples = std::max<uint32_t>(1, kSampleRateHz / (frequencyHz * 2U));
 
-  for (size_t frame = 0; frame < kBeepFrames; ++frame) {
+  for (size_t frame = 0; frame < frames; ++frame) {
     int32_t sample =
-        ((frame / halfPeriodSamples) % 2U == 0U) ? kBeepAmplitude : -kBeepAmplitude;
+        ((frame / halfPeriodSamples) % 2U == 0U) ? amplitude : -amplitude;
 
     if (attackFrames > 0 && frame < attackFrames) {
       sample = (sample * static_cast<int32_t>(frame)) / static_cast<int32_t>(attackFrames);
-    } else if (releaseFrames > 0 && frame >= (kBeepFrames - releaseFrames)) {
-      const size_t remaining = kBeepFrames - frame;
+    } else if (releaseFrames > 0 && frame >= (frames - std::min(releaseFrames, frames))) {
+      const size_t remaining = frames - frame;
       sample = (sample * static_cast<int32_t>(remaining)) / static_cast<int32_t>(releaseFrames);
     }
 
     const size_t index = frame * 2U;
-    beepBuffer_[index] = static_cast<int16_t>(sample);
-    beepBuffer_[index + 1U] = static_cast<int16_t>(sample);
+    toneBuffer_[index] = static_cast<int16_t>(sample);
+    toneBuffer_[index + 1U] = static_cast<int16_t>(sample);
   }
+
+  return frames;
 }

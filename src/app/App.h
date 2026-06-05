@@ -428,7 +428,7 @@ class App {
   String formatFocusTimerRemaining(uint32_t nowMs) const;
   String formatFocusTimerDuration(uint32_t durationMs) const;
   String focusTimerCountsLabel() const;
-  void playFocusTimerCompletionCue();
+  void playFocusTimerCue(FocusTimer::Cue cue);
 
   AppState state_ = AppState::Booting;
   AppState standbyReturnState_ = AppState::Paused;
