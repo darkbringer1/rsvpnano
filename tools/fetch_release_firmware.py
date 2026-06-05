@@ -13,10 +13,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WEB_FIRMWARE_DIR = ROOT / "web" / "firmware"
 MANIFEST_PATH = WEB_FIRMWARE_DIR / "manifest.json"
-DEFAULT_REPO = "ionutdecebal/rsvpnano"
-DEFAULT_ASSETS = ("rsvp-nano.bin", "rsvp-nano-ota.bin")
+DEFAULT_REPO = "darkbringer1/rsvpnano"
+DEFAULT_ASSETS = ("rsvp-nano-amoled.bin", "rsvp-nano-amoled-ota.bin")
 DEFAULT_MANIFEST = {
-    "name": "RSVP Nano",
+    "name": "RSVP Nano AMOLED",
     "version": "dev",
     "new_install_prompt_erase": True,
     "new_install_improv_wait_time": 0,
@@ -26,7 +26,7 @@ DEFAULT_MANIFEST = {
             "improv": False,
             "parts": [
                 {
-                    "path": "rsvp-nano.bin",
+                    "path": "rsvp-nano-amoled.bin",
                     "offset": 0,
                 }
             ],

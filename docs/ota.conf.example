@@ -1,17 +1,16 @@
-# Optional advanced OTA override file.
+# Optional advanced OTA fallback file.
 # The normal setup flow is now on-device: Settings -> Wi-Fi -> Choose network.
 # Copy this file to the SD card as /config/ota.conf only if you want a fallback
-# or want to override the default repo/asset settings.
+# for Wi-Fi credentials or auto-check.
 
 wifi_ssid=YourWiFiName
 wifi_password=YourWiFiPassword
 
 # OTA source is HARD-LOCKED to darkbringer1/rsvpnano (the AMOLED fork).
-# github_owner / github_repo are intentionally ignored if present here:
+# github_owner / github_repo / asset_name are intentionally ignored if present here:
 # the AMOLED port runs different hardware than the upstream bar-board build,
 # so pulling a foreign firmware image would re-brick the display.
-# Only asset_name may be customized.
-# asset_name=rsvp-nano-ota.bin
+# The updater always uses rsvp-nano-amoled-ota.bin.
 
 # Optional. When true, the device checks the latest GitHub Release during boot.
 auto_check=false

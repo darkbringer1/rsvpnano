@@ -290,7 +290,9 @@ bool OtaUpdater::loadConfigFromPath(const char *path, Config &config) const {
       Serial.printf("[ota] Ignoring '%s' override; OTA source is locked to %s/%s\n",
                     key.c_str(), kLockedOwner, kLockedRepo);
     } else if (key == "asset_name") {
-      config.assetName = value;
+      // OTA asset is hard-locked to the AMOLED build; ignore any override attempt.
+      Serial.printf("[ota] Ignoring 'asset_name' override; OTA asset is locked to %s\n",
+                    kLockedAssetName);
     } else if (key == "auto_check") {
       config.autoCheck = parseBoolValue(value);
     }
@@ -420,6 +422,13 @@ bool OtaUpdater::resolveDownloadUrl(const String &assetUrl, const String &versio
   return false;
 }
 
+OtaUpdater::Config OtaUpdater::lockedConfig(Config config) const {
+  config.githubOwner = kLockedOwner;
+  config.githubRepo = kLockedRepo;
+  config.assetName = kLockedAssetName;
+  return config;
+}
+
 void OtaUpdater::reportStatus(StatusCallback callback, void *context, const char *title,
                               const String &line1, const String &line2,
                               int progressPercent) const {
@@ -432,17 +441,18 @@ void OtaUpdater::reportStatus(StatusCallback callback, void *context, const char
 
 OtaUpdater::Result OtaUpdater::checkOnly(const Config &config, StatusCallback callback,
                                          void *context) const {
+  const Config safeConfig = lockedConfig(config);
   Result result;
   result.currentVersion = currentVersion();
 
-  if (!isConfigured(config)) {
+  if (!isConfigured(safeConfig)) {
     result.code = ResultCode::NotConfigured;
     result.summary = "Wi-Fi not set";
     result.detail = "Settings -> Wi-Fi";
     return result;
   }
 
-  if (!connectWiFi(config, callback, context)) {
+  if (!connectWiFi(safeConfig, callback, context)) {
     disconnectWiFi();
     result.code = ResultCode::ConnectFailed;
     result.summary = "Wi-Fi failed";
@@ -452,7 +462,7 @@ OtaUpdater::Result OtaUpdater::checkOnly(const Config &config, StatusCallback ca
 
   LatestRelease release;
   String metadataError;
-  if (!fetchLatestRelease(config, release, metadataError, callback, context)) {
+  if (!fetchLatestRelease(safeConfig, release, metadataError, callback, context)) {
     disconnectWiFi();
     result.code = ResultCode::MetadataFailed;
     result.summary = "GitHub failed";
@@ -472,7 +482,7 @@ OtaUpdater::Result OtaUpdater::checkOnly(const Config &config, StatusCallback ca
   if (release.assetUrl.isEmpty()) {
     result.code = ResultCode::AssetMissing;
     result.summary = "Asset missing";
-    result.detail = config.assetName;
+    result.detail = safeConfig.assetName;
     return result;
   }
 
@@ -484,17 +494,18 @@ OtaUpdater::Result OtaUpdater::checkOnly(const Config &config, StatusCallback ca
 
 OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallback callback,
                                                void *context) const {
+  const Config safeConfig = lockedConfig(config);
   Result result;
   result.currentVersion = currentVersion();
 
-  if (!isConfigured(config)) {
+  if (!isConfigured(safeConfig)) {
     result.code = ResultCode::NotConfigured;
     result.summary = "Wi-Fi not set";
     result.detail = "Settings -> Wi-Fi";
     return result;
   }
 
-  if (!connectWiFi(config, callback, context)) {
+  if (!connectWiFi(safeConfig, callback, context)) {
     disconnectWiFi();
     result.code = ResultCode::ConnectFailed;
     result.summary = "Wi-Fi failed";
@@ -504,7 +515,7 @@ OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallb
 
   LatestRelease release;
   String metadataError;
-  if (!fetchLatestRelease(config, release, metadataError, callback, context)) {
+  if (!fetchLatestRelease(safeConfig, release, metadataError, callback, context)) {
     disconnectWiFi();
     result.code = ResultCode::MetadataFailed;
     result.summary = "GitHub failed";
@@ -525,7 +536,7 @@ OtaUpdater::Result OtaUpdater::checkAndInstall(const Config &config, StatusCallb
     disconnectWiFi();
     result.code = ResultCode::AssetMissing;
     result.summary = "Asset missing";
-    result.detail = config.assetName;
+    result.detail = safeConfig.assetName;
     return result;
   }
 
