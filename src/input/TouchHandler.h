@@ -47,4 +47,5 @@ class TouchHandler {
   uint16_t lastY_ = 0;
 
   bool readTouchPacket(uint8_t *buffer, size_t len);
+  void reinitialize();
 };

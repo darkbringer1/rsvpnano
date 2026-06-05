@@ -12,6 +12,8 @@ constexpr uint8_t kReadTouchCommand[] = {
 };
 constexpr uint32_t kPollIntervalMs = 20;
 constexpr uint32_t kFailureBackoffMs = 250;
+constexpr uint32_t kRecoveryBackoffMs = 1000;
+constexpr uint8_t kFailuresBeforeRecovery = 5;
 constexpr uint8_t kReleaseConfirmSamples = 2;
 
 uint16_t clampDisplayX(uint16_t x) {
@@ -56,6 +58,25 @@ bool TouchHandler::begin() {
   }
 
   return initialized_;
+}
+
+void TouchHandler::reinitialize() {
+  // Recover a hung/sleeping I2C bus before re-probing the controller.
+  Wire.end();
+  Wire.begin(BoardConfig::PIN_TOUCH_SDA, BoardConfig::PIN_TOUCH_SCL);
+  Wire.setClock(300000);
+
+  Wire.beginTransmission(kAddress);
+  const bool present = (Wire.endTransmission() == 0);
+  touchActive_ = false;
+  emptyTouchSamples_ = 0;
+  if (present) {
+    Serial.println("[touch] Recovered controller after read failures");
+  } else {
+    // Leave initialized_ true so poll() keeps retrying recovery on the slow
+    // cadence rather than wedging touch until a reboot.
+    Serial.printf("[touch] Re-probe failed at 0x%02X; will retry\n", kAddress);
+  }
 }
 
 void TouchHandler::end() {
@@ -146,10 +167,18 @@ bool TouchHandler::poll(TouchEvent &event) {
 
   uint8_t data[8] = {0};
   if (!readTouchPacket(data, sizeof(data))) {
-    backoffUntilMs_ = now + kFailureBackoffMs;
-    if (++consecutiveReadFailures_ >= 5) {
-      initialized_ = false;
-      Serial.println("[touch] Read failed repeatedly, disabling touch polling");
+    if (++consecutiveReadFailures_ >= kFailuresBeforeRecovery) {
+      // A burst of read failures happens when the panel sleeps/wakes (screensaver,
+      // standby) disturbs the shared I2C bus, or the controller drops into a
+      // low-power monitor mode and NACKs reads. Self-heal by re-probing the
+      // controller instead of permanently disabling touch (which previously left
+      // touch dead until a full reboot). Keep retrying on a slow cadence so a
+      // genuinely absent controller never wedges the device.
+      reinitialize();
+      consecutiveReadFailures_ = 0;
+      backoffUntilMs_ = now + kRecoveryBackoffMs;
+    } else {
+      backoffUntilMs_ = now + kFailureBackoffMs;
     }
     return false;
   }
