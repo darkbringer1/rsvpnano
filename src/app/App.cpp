@@ -72,6 +72,11 @@ constexpr uint8_t kBatteryLowWarningPercent = 5;
 constexpr uint8_t kBatteryCriticalPercent = 1;
 constexpr uint8_t kBatteryCriticalConsecutiveSamples = 2;
 constexpr uint32_t kStandbyWakeGraceMs = 900;
+// Idle timeout that drops the AMOLED board into the standby screensaver. The
+// board has a single button, so there is no PWR+BOOT combo to enter standby;
+// it auto-enters after this much inactivity from Paused/Menu and wakes on any
+// touch or BOOT press.
+constexpr uint32_t kIdleStandbyTimeoutMs = 3UL * 60UL * 1000UL;  // 3 minutes
 constexpr uint32_t kStandbyFrameMs = 160;
 constexpr uint16_t kStandbyLifeCellPixels = 2;
 constexpr uint16_t kStandbyLifeColumns = BoardConfig::DISPLAY_WIDTH / kStandbyLifeCellPixels;
@@ -778,11 +783,16 @@ void App::begin() {
 void App::update(uint32_t nowMs) {
   button_.update(nowMs);
   powerButton_.update(nowMs);
+#if defined(BOARD_AMOLED_18)
+  // This board has a single usable hardware button (BOOT). Drive menu access from it.
+  handleAmoledButton(nowMs);
+#else
   const bool standbyComboConsumed = handleStandbyCombo(nowMs);
   if (!standbyComboConsumed) {
     handleBootButton(nowMs);
     handlePowerButton(nowMs);
   }
+#endif
   if (powerOffStarted_) {
     return;
   }
@@ -806,6 +816,12 @@ void App::update(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Standby) {
+#if defined(BOARD_AMOLED_18)
+    handleAmoledStandbyWake(nowMs);
+    if (state_ != AppState::Standby) {
+      return;  // Woke up this frame; resume normal handling next tick.
+    }
+#endif
     handleTouch(nowMs);
     updateStandbyScreensaver(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
@@ -827,6 +843,9 @@ void App::update(uint32_t nowMs) {
   updateWpmFeedback(nowMs);
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
+#if defined(BOARD_AMOLED_18)
+  updateIdleStandby(nowMs);
+#endif
 
   if (batteryChanged && (state_ == AppState::Paused || state_ == AppState::Playing)) {
     renderActiveReader(nowMs);
@@ -1087,6 +1106,62 @@ bool App::handleStandbyCombo(uint32_t nowMs) {
 
   return false;
 }
+
+#if defined(BOARD_AMOLED_18)
+void App::handleAmoledButton(uint32_t nowMs) {
+  // Single hardware button (BOOT): short press toggles the menu / backs out of a
+  // submenu; long press cycles brightness.
+  if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_ ||
+      state_ == AppState::Standby) {
+    return;
+  }
+
+  if (!bootButtonReleasedSinceBoot_) {
+    if (!button_.isHeld()) {
+      bootButtonReleasedSinceBoot_ = true;
+    }
+    return;
+  }
+
+  if (button_.isHeld() || button_.wasPressedEvent() || button_.wasReleasedEvent()) {
+    noteActivity(nowMs);  // BOOT interaction resets the idle-standby timer.
+  }
+
+  // Full-screen utility pages: a BOOT press exits straight back to the main menu.
+  if (state_ == AppState::UsbTransfer) {
+    if (button_.wasReleasedEvent()) {
+      exitUsbTransfer(nowMs);
+      openMainMenu(nowMs);
+    }
+    return;
+  }
+  if (state_ == AppState::CompanionSync) {
+    if (button_.wasReleasedEvent()) {
+      exitCompanionSync(nowMs);
+      openMainMenu(nowMs);
+    }
+    return;
+  }
+
+  if (button_.isHeld() && !bootButtonLongPressHandled_ &&
+      button_.heldDurationMs(nowMs) >= kThemeToggleHoldMs) {
+    bootButtonLongPressHandled_ = true;
+    cycleBrightness();
+    return;
+  }
+
+  if (!button_.wasReleasedEvent()) {
+    return;
+  }
+
+  if (bootButtonLongPressHandled_) {
+    bootButtonLongPressHandled_ = false;
+    return;
+  }
+
+  toggleMenuFromPowerButton(nowMs);
+}
+#endif
 
 void App::handleBootButton(uint32_t nowMs) {
   if (state_ == AppState::Standby) {
@@ -1906,7 +1981,7 @@ void App::handleTouch(uint32_t nowMs) {
   }
 
   if (state_ == AppState::Booting || state_ == AppState::UsbTransfer ||
-      state_ == AppState::Standby ||
+      state_ == AppState::CompanionSync || state_ == AppState::Standby ||
       state_ == AppState::Sleeping) {
     touch_.cancel();
     pausedTouch_.active = false;
@@ -1921,6 +1996,7 @@ void App::handleTouch(uint32_t nowMs) {
     return;
   }
 
+  noteActivity(nowMs);  // Any touch resets the idle-standby timer (AMOLED).
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
                 stateName(state_));
@@ -2242,11 +2318,29 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
   if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
+    lastMenuTapValid_ = false;  // A scroll cancels any pending double-tap.
     return;
   }
 
   if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
-    selectMenuItem(nowMs);
+    // Selection requires a DOUBLE tap so a short swipe that lands like a tap
+    // does not accidentally open a menu item. A single tap only arms the
+    // window; the second tap nearby and in time confirms the selection.
+    const bool recentTap =
+        lastMenuTapValid_ && nowMs - lastMenuTapMs_ <= kReaderDoubleTapWindowMs &&
+        abs(static_cast<int>(event.x) - static_cast<int>(lastMenuTapX_)) <=
+            static_cast<int>(kReaderDoubleTapSlopPx) &&
+        abs(static_cast<int>(event.y) - static_cast<int>(lastMenuTapY_)) <=
+            static_cast<int>(kReaderDoubleTapSlopPx);
+    if (recentTap) {
+      lastMenuTapValid_ = false;
+      selectMenuItem(nowMs);
+    } else {
+      lastMenuTapValid_ = true;
+      lastMenuTapMs_ = nowMs;
+      lastMenuTapX_ = event.x;
+      lastMenuTapY_ = event.y;
+    }
   }
 }
 
@@ -2278,15 +2372,20 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
   const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
                        absDeltaY <= static_cast<int>(kTapSlopPx);
 
-  if (focusTimer_.isActiveTimerRunning() && !focusTimerCancelHoldTriggered_ &&
-      event.phase != TouchPhase::End &&
+  // Touch-and-hold (anywhere in the session) backs out to the genre picker.
+  if (!focusTimerCancelHoldTriggered_ && event.phase != TouchPhase::End &&
       absDeltaX <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       absDeltaY <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       nowMs - pausedTouch_.startMs >= kFocusTimerCancelHoldMs) {
-    focusTimer_.cancelActiveTimer(nowMs);
     pausedTouch_.active = false;
     focusTimerCancelHoldTriggered_ = true;
-    renderFocusTimerSession();
+    focusTimer_.abandon();
+    rebuildFocusTimerGenreMenuItems();
+    focusTimerGenreSelectedIndex_ = focusTimerGenreMenuItems_.size() > 1
+                                        ? kFocusTimerGenreFirstIndex
+                                        : kFocusTimerGenreBackIndex;
+    menuScreen_ = MenuScreen::FocusTimerGenres;
+    renderFocusTimerGenres();
     return;
   }
 
@@ -2301,7 +2400,11 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  (void)tapLike;
+  // A tap starts the timer / skips to the next phase.
+  if (tapLike) {
+    focusTimer_.advance(nowMs);
+    renderFocusTimerSession();
+  }
 }
 
 void App::openFocusTimer() {
@@ -2345,11 +2448,13 @@ void App::resetFocusTimer() {
 void App::rebuildFocusTimerGenreMenuItems() {
   focusTimerGenreMenuItems_.clear();
   focusTimerGenreMenuItems_.push_back(uiText(UiText::Back));
-  focusTimerGenreMenuItems_.push_back("Chores");
-  focusTimerGenreMenuItems_.push_back("Work");
-  focusTimerGenreMenuItems_.push_back("Fitness");
-  focusTimerGenreMenuItems_.push_back("Self Care");
-  focusTimerGenreMenuItems_.push_back("Other");
+  const FocusTimer::Genre kGenres[] = {
+      FocusTimer::Genre::Chores, FocusTimer::Genre::RsvpNano, FocusTimer::Genre::StrengthLabs,
+      FocusTimer::Genre::SelfCare, FocusTimer::Genre::Other};
+  for (const FocusTimer::Genre genre : kGenres) {
+    focusTimerGenreMenuItems_.push_back(String(FocusTimer::genreLabel(genre)) + "  " +
+                                        String(FocusTimer::workMinutesForGenre(genre)) + "m");
+  }
 
   if (focusTimerGenreSelectedIndex_ >= focusTimerGenreMenuItems_.size()) {
     focusTimerGenreSelectedIndex_ =
@@ -4276,6 +4381,58 @@ void App::exitStandby(uint32_t nowMs) {
   setState(nextState, nowMs);
 }
 
+void App::noteActivity(uint32_t nowMs) { lastActivityMs_ = nowMs; }
+
+#if defined(BOARD_AMOLED_18)
+void App::updateIdleStandby(uint32_t nowMs) {
+  // Only the resting states accrue idle time. Reading (Playing) holds activity
+  // alive via continuous touch; utility/sync/boot screens manage their own life.
+  if (state_ != AppState::Paused && state_ != AppState::Menu) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
+  if (lastActivityMs_ == 0) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
+  if (nowMs - lastActivityMs_ >= kIdleStandbyTimeoutMs) {
+    enterStandby(nowMs);
+  }
+}
+
+void App::handleAmoledStandbyWake(uint32_t nowMs) {
+  if (state_ != AppState::Standby) {
+    return;
+  }
+  // Ignore input briefly so the gesture/idle that led here cannot bounce back.
+  if (nowMs - standbyEnteredMs_ < kStandbyWakeGraceMs) {
+    if (touchInitialized_) {
+      TouchEvent drop;
+      touch_.poll(drop);  // Drain so a held touch is not queued as a wake.
+    }
+    return;
+  }
+
+  // Wake on a BOOT press...
+  if (button_.wasReleasedEvent() || button_.wasPressedEvent()) {
+    bootButtonLongPressHandled_ = true;
+    exitStandby(nowMs);
+    noteActivity(nowMs);
+    return;
+  }
+
+  // ...or on any screen touch.
+  if (touchInitialized_) {
+    TouchEvent ev;
+    if (touch_.poll(ev) && ev.touched) {
+      touch_.cancel();
+      exitStandby(nowMs);
+      noteActivity(nowMs);
+    }
+  }
+}
+#endif  // BOARD_AMOLED_18
+
 void App::seedStandbyScreensaver(uint32_t nowMs) {
   if (screensaverMode_ != ScreensaverMode::ScreenOff && standbyScreenOffActive_) {
     display_.wakeFromSleep();
@@ -5199,6 +5356,9 @@ void App::renderFocusTimerSession() {
   applyUiOrientation(focusTimer_.uiOrientation());
   const String remainingLabel = formatFocusTimerRemaining(millis());
 
+  const uint8_t workMin = FocusTimer::workMinutesForGenre(focusTimer_.genre());
+  const String cycle = String("Warm 2m / Work ") + workMin + "m / Break 5m\nHold = pick another timer";
+
   switch (focusTimer_.state()) {
     case FocusTimer::State::Unavailable:
       display_.renderFocusTimerScreen("TIMER", "", "", "IMU unavailable");
@@ -5207,14 +5367,16 @@ void App::renderFocusTimerSession() {
       renderFocusTimerGenres();
       return;
     case FocusTimer::State::WaitForTouchStart:
-      display_.renderFocusTimerScreen("BEGIN", "", "", "Place on short side");
+      display_.renderFocusTimerScreen("BEGIN", "", "",
+                                      "Tap to start a 2m warm-up\n(or stand on a short side)", cycle);
       return;
     case FocusTimer::State::TouchRunning:
-      display_.renderFocusTimerScreen("BEGIN", "", remainingLabel, "",
+      display_.renderFocusTimerScreen("WARM UP", "", remainingLabel, "",
                                       "", focusTimer_.progressPercent(millis()));
       return;
     case FocusTimer::State::WaitAfterTouch:
-      display_.renderFocusTimerScreen("WORK", "", "", "Flip to continue");
+      display_.renderFocusTimerScreen("WORK", "", "",
+                                      "Tap to start work\n(or flip / lay flat to break)", cycle);
       return;
     case FocusTimer::State::WorkRunning:
       display_.renderFocusTimerScreen("WORK", "", remainingLabel, "",
@@ -5225,14 +5387,16 @@ void App::renderFocusTimerSession() {
                                       "", focusTimer_.progressPercent(millis()), true);
       return;
     case FocusTimer::State::WaitAfterWork:
-      display_.renderFocusTimerScreen("BREAK", "", "", "Turn for break", "",
-                                      -1, true);
+      display_.renderFocusTimerScreen("BREAK", "", "",
+                                      "Tap to start a 5m break\n(or flip to keep working)", cycle, -1,
+                                      true);
       return;
     case FocusTimer::State::WaitAfterBreak:
-      display_.renderFocusTimerScreen("WORK", "", "", "Flip to begin");
+      display_.renderFocusTimerScreen("WORK", "", "",
+                                      "Tap to start work\n(or stand on a short side)", cycle);
       return;
     case FocusTimer::State::Cancelled:
-      display_.renderFocusTimerScreen("BEGIN", "", "", "Place to begin again");
+      display_.renderFocusTimerScreen("BEGIN", "", "", "Tap to begin again", cycle);
       return;
     case FocusTimer::State::Complete:
       display_.renderFocusTimerScreen("DONE", "", "", "Session complete");

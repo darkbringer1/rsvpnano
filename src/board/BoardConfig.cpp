@@ -140,15 +140,114 @@ uint8_t batteryPercentForVoltage(float voltage) {
   return 0;
 }
 
+#if defined(BOARD_AMOLED_18)
+// --- AXP2101 PMU battery read (Waveshare ESP32-S3-Touch-AMOLED-1.8) ----------
+// The AXP2101 shares the touch I2C bus (Wire, GPIO15/14) at address 0x34 and
+// powers the whole board. We ONLY read ADC/status registers and, at most, do a
+// read-modify-write to the ADC-enable register (0x30). We never touch DCDC/LDO
+// power-rail registers: a bad write there would brown out the device.
+//
+// UNVERIFIED ON HARDWARE: written without a battery attached. If a battery is
+// connected and this reads wrong, the suspect registers are noted inline.
+constexpr uint8_t kAxp2101Address = 0x34;
+constexpr uint8_t kAxpRegChipId = 0x03;          // expect 0x4A on AXP2101
+constexpr uint8_t kAxpRegStatus1 = 0x00;         // bit3 = battery connected
+constexpr uint8_t kAxpRegAdcEnable = 0x30;       // bit0 = VBAT voltage ADC
+constexpr uint8_t kAxpRegVbatHigh = 0x34;        // [5:0] high bits of VBAT mV
+constexpr uint8_t kAxpRegVbatLow = 0x35;         // [7:0] low bits of VBAT mV
+bool gAxp2101Probed = false;
+bool gAxp2101Present = false;
+
+bool axpReadReg(uint8_t reg, uint8_t &value) {
+  Wire.beginTransmission(kAxp2101Address);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(static_cast<uint8_t>(kAxp2101Address), static_cast<uint8_t>(1)) != 1) {
+    return false;
+  }
+  value = Wire.read();
+  return true;
+}
+
+bool axpWriteReg(uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(kAxp2101Address);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission(true) == 0;
+}
+
+// Detect the PMU and enable the battery-voltage ADC. Power rails untouched.
+void probeAxp2101IfNeeded() {
+  if (gAxp2101Probed) {
+    return;
+  }
+  gAxp2101Probed = true;
+
+  uint8_t chipId = 0;
+  if (!axpReadReg(kAxpRegChipId, chipId)) {
+    Serial.println("[board] AXP2101 not detected on Wire (no battery telemetry)");
+    return;
+  }
+  // AXP2101 chip ID is 0x4A; accept anything that ACKed but warn on mismatch.
+  if (chipId != 0x4A) {
+    Serial.printf("[board] AXP2101 unexpected chip id 0x%02X (continuing)\n", chipId);
+  }
+
+  // Read-modify-write only the ADC-enable register to turn on the VBAT ADC.
+  uint8_t adcEnable = 0;
+  if (axpReadReg(kAxpRegAdcEnable, adcEnable)) {
+    const uint8_t want = adcEnable | 0x01;  // bit0 = VBAT voltage ADC
+    if (want != adcEnable) {
+      axpWriteReg(kAxpRegAdcEnable, want);
+    }
+  }
+
+  gAxp2101Present = true;
+  Serial.println("[board] AXP2101 detected; battery voltage ADC enabled");
+}
+
+bool readBatteryStatusAxp2101(BatteryStatus &status) {
+  probeAxp2101IfNeeded();
+  if (!gAxp2101Present) {
+    return false;
+  }
+
+  uint8_t high = 0;
+  uint8_t low = 0;
+  if (!axpReadReg(kAxpRegVbatHigh, high) || !axpReadReg(kAxpRegVbatLow, low)) {
+    return false;
+  }
+
+  // VBAT ADC is a 14-bit value in millivolts (1 mV / LSB) on the AXP2101.
+  const uint16_t millivolts = static_cast<uint16_t>((high & 0x3F) << 8) | low;
+  status.voltage = static_cast<float>(millivolts) / 1000.0f;
+
+  // No battery (or ADC not yet settled) reads ~0. Treat as absent.
+  status.present = status.voltage >= 2.5f && status.voltage <= 4.6f;
+  if (!status.present) {
+    status.percent = 0;
+    return false;
+  }
+
+  status.percent = batteryPercentForVoltage(status.voltage);
+  return true;
+}
+#endif  // BOARD_AMOLED_18
+
 }  // namespace
 
 void begin() {
   pinMode(PIN_BOOT_BUTTON, INPUT_PULLUP);
   pinMode(PIN_PWR_BUTTON, INPUT_PULLUP);
   gpio_deep_sleep_hold_dis();
+#if !defined(BOARD_AMOLED_18)
+  // AMOLED panel is self-emissive (no backlight pin); GPIO8 is an I2S line there.
   gpio_hold_dis(static_cast<gpio_num_t>(PIN_LCD_BACKLIGHT));
   pinMode(PIN_LCD_BACKLIGHT, OUTPUT);
   digitalWrite(PIN_LCD_BACKLIGHT, LOW);
+#endif
 
   Wire.begin(PIN_TOUCH_SDA, PIN_TOUCH_SCL);
   Wire.setClock(300000);
@@ -160,9 +259,12 @@ void begin() {
   holdBatteryPowerIfAvailable();
   disableBatteryAdcPathIfAvailable();
 
+#if !defined(BOARD_AMOLED_18)
+  // On AMOLED, PIN_BATTERY_ADC overlaps an LCD data line; battery comes from AXP2101 instead.
   pinMode(PIN_BATTERY_ADC, INPUT);
   analogReadResolution(12);
   analogSetPinAttenuation(PIN_BATTERY_ADC, ADC_11db);
+#endif
 }
 
 void lightSleepUntilBootButton() {
@@ -176,6 +278,9 @@ void lightSleepUntilBootButton() {
 }
 
 void holdBacklightOffForDeepSleep() {
+#if defined(BOARD_AMOLED_18)
+  return;  // No backlight pin on the AMOLED board.
+#else
   const gpio_num_t backlightPin = static_cast<gpio_num_t>(PIN_LCD_BACKLIGHT);
 
   // The LCD backlight is active-low. Hold the inactive level while the ESP32 is in deep sleep,
@@ -187,10 +292,14 @@ void holdBacklightOffForDeepSleep() {
   gpio_set_level(backlightPin, 1);
   gpio_hold_en(backlightPin);
   gpio_deep_sleep_hold_en();
+#endif
 }
 
 bool readBatteryStatus(BatteryStatus &status) {
   status = BatteryStatus{};
+#if defined(BOARD_AMOLED_18)
+  return readBatteryStatusAxp2101(status);  // AXP2101 PMU over Wire (15/14).
+#else
   enableBatteryAdcPathIfAvailable();
   delay(12);
 
@@ -239,6 +348,7 @@ bool readBatteryStatus(BatteryStatus &status) {
 
   status.percent = batteryPercentForVoltage(status.voltage);
   return true;
+#endif
 }
 
 bool releaseBatteryPowerHold() {

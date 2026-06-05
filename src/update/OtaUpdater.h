@@ -7,11 +7,19 @@ class OtaUpdater {
   using StatusCallback = void (*)(void *context, const char *title, const char *line1,
                                   const char *line2, int progressPercent);
 
+  // OTA source is hard-locked to this fork. The AMOLED port runs different
+  // hardware than the upstream bar-board build; pulling a foreign firmware
+  // image would re-brick the display. Owner/repo are NOT overridable via
+  // ota.conf (those keys are ignored). Only assetName / Wi-Fi / auto_check
+  // may be customized.
+  static constexpr const char *kLockedOwner = "darkbringer1";
+  static constexpr const char *kLockedRepo = "rsvpnano";
+
   struct Config {
     String wifiSsid;
     String wifiPassword;
-    String githubOwner = "ionutdecebal";
-    String githubRepo = "rsvpnano";
+    String githubOwner = kLockedOwner;
+    String githubRepo = kLockedRepo;
     String assetName = "rsvp-nano-ota.bin";
     bool autoCheck = false;
   };

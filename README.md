@@ -4,6 +4,11 @@ RSVP Nano is an open-source ESP32-S3 reading device that shows text one word at 
 
 This README is written for the current release, `v0.0.5`.
 
+> **AMOLED port:** this fork also targets the Waveshare ESP32-S3-Touch-AMOLED-1.8
+> board (square 368×448 AMOLED, capacitive touch, single button). Build with
+> `pio run -e amoled`. See [docs/amoled-port.md](docs/amoled-port.md) for the
+> control scheme, USB transfer, battery, idle standby, and OTA lock details.
+
 ## What You Need
 
 - An RSVP Nano device.

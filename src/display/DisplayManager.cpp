@@ -39,7 +39,7 @@ constexpr uint16_t kDarkFooterColor = 0x528A;
 constexpr uint16_t kLightFooterColor = 0x5ACB;
 constexpr uint8_t kNightDimAlpha = 92;
 constexpr uint8_t kNightFooterAlpha = 132;
-constexpr int kRsvpSideMargin = 12;
+constexpr int kRsvpSideMargin = 12;  // word uses full width; only corner chrome is inset
 constexpr int kRsvpGuideTickHeight = 5;
 constexpr int kRsvpGuideTopOffset = 7;
 constexpr int kRsvpGuideBottomOffset = 7;
@@ -48,8 +48,13 @@ constexpr int kTinyGlyphWidth = 5;
 constexpr int kTinyGlyphHeight = 7;
 constexpr int kTinyGlyphSpacing = 1;
 constexpr int kTinyScale = 2;
+#if defined(BOARD_AMOLED_18)
+constexpr int kFooterMarginX = 34;       // clear rounded corners (left/right chrome)
+constexpr int kFooterMarginBottom = 18;  // clear rounded corners (top/bottom chrome)
+#else
 constexpr int kFooterMarginX = 12;
 constexpr int kFooterMarginBottom = 8;
+#endif
 constexpr int kCompactMenuRowHeight = 22;
 constexpr int kCompactMenuX = 28;
 constexpr int kLibraryRowHeight = 38;
@@ -3089,7 +3094,6 @@ void DisplayManager::renderFocusTimerScreen(const String &mode, const String &ge
                                             const String &footer, int progressPercent,
                                             bool breakAccent) {
   (void)genre;
-  (void)footer;
   progressPercent = std::max(-1, std::min(100, progressPercent));
   const int virtualWidth = logicalWidth();
   const int virtualHeight = logicalHeight();
@@ -3358,6 +3362,20 @@ void DisplayManager::renderFocusTimerScreen(const String &mode, const String &ge
                        y, instructionColor, instructionScale);
         y += lineHeight;
       }
+    }
+  }
+
+  // Bottom info line (e.g. the work/break cycle). Shown on the non-running
+  // transition screens, where the fill bar isn't covering the bottom.
+  if (!footer.isEmpty() && !timerRunning) {
+    const int footerScale = portrait ? 1 : 2;
+    const std::vector<String> footerLines = wrapTinyLines(footer, contentWidth, footerScale);
+    const int lineHeight = (kTinyGlyphHeight * footerScale) + footerScale + 3;
+    int y = virtualHeight - kFooterMarginBottom -
+            (static_cast<int>(footerLines.size()) * lineHeight);
+    for (const String &line : footerLines) {
+      drawTinyTextAt(line, centeredXForTiny(line, footerScale), y, footerColor(), footerScale);
+      y += lineHeight;
     }
   }
 

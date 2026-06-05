@@ -28,7 +28,11 @@ class TouchHandler {
   void setUiRotated180(bool rotated180);
 
  private:
+#if defined(BOARD_AMOLED_18)
+  static constexpr uint8_t kAddress = 0x38;  // FT3168 capacitive touch on the AMOLED board.
+#else
   static constexpr uint8_t kAddress = 0x3B;  // AXS15231B touch endpoint on the 3.49" board.
+#endif
   bool initialized_ = false;
   uint32_t lastPollMs_ = 0;
   uint32_t backoffUntilMs_ = 0;

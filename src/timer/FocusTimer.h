@@ -35,6 +35,7 @@ class FocusTimer {
   void update(uint32_t nowMs);
   void chooseGenre(Genre genre, uint32_t nowMs);
   void cancelActiveTimer(uint32_t nowMs);
+  void advance(uint32_t nowMs);  // Touch-driven: start / skip to the next phase.
   void abandon();
 
   bool available() const;
@@ -50,6 +51,7 @@ class FocusTimer {
   bool consumeCompletionCue();
 
   static const char *genreLabel(Genre genre);
+  static uint8_t workMinutesForGenre(Genre genre);
 
  private:
   enum class TimerMode : uint8_t {

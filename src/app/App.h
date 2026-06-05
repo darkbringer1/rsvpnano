@@ -178,6 +178,9 @@ class App {
   void maybeSaveReadingPosition(uint32_t nowMs);
   void handleBootButton(uint32_t nowMs);
   void handlePowerButton(uint32_t nowMs);
+#if defined(BOARD_AMOLED_18)
+  void handleAmoledButton(uint32_t nowMs);
+#endif
   bool handleStandbyCombo(uint32_t nowMs);
   void toggleMenuFromPowerButton(uint32_t nowMs);
   void openMainMenu(uint32_t nowMs);
@@ -296,6 +299,11 @@ class App {
   void exitUsbTransfer(uint32_t nowMs);
   void enterStandby(uint32_t nowMs);
   void exitStandby(uint32_t nowMs);
+  void noteActivity(uint32_t nowMs);
+#if defined(BOARD_AMOLED_18)
+  void updateIdleStandby(uint32_t nowMs);
+  void handleAmoledStandbyWake(uint32_t nowMs);
+#endif
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
   void seedStandbyLife(uint32_t nowMs);
@@ -508,6 +516,11 @@ class App {
   TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
+  uint32_t lastMenuTapMs_ = 0;
+  uint32_t lastActivityMs_ = 0;
+  uint16_t lastMenuTapX_ = 0;
+  uint16_t lastMenuTapY_ = 0;
+  bool lastMenuTapValid_ = false;
   bool touchInitialized_ = false;
   bool touchPlayHeld_ = false;
   bool playLocked_ = false;
