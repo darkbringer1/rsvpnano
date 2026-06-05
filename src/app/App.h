@@ -124,7 +124,6 @@ class App {
   enum class TextEntryPurpose : uint8_t {
     None,
     WifiPassword,
-    OtaOwner,
   };
 
   enum class KeyboardMode : uint8_t {
@@ -278,7 +277,6 @@ class App {
   void commitTextEntry(uint32_t nowMs);
   String configuredWifiSsid();
   bool otaAutoCheckEnabled();
-  String otaOwnerLabel();
   String pacingDelayLabel(uint16_t delayMs) const;
   String firmwareUpdateMenuLabel() const;
   String firmwareVersionLabel() const;

@@ -50,8 +50,8 @@ jobs:
           RSVP Nano firmware release.
 
           Assets:
-          - `rsvp-nano.bin` is the full browser-flasher image for fresh installs.
-          - `rsvp-nano-ota.bin` is the app-only binary used by OTA updates.
+          - `rsvp-nano-amoled.bin` is the full browser-flasher image for fresh installs.
+          - `rsvp-nano-amoled-ota.bin` is the app-only binary used by OTA updates.
           NOTES
           fi
 
@@ -62,13 +62,13 @@ jobs:
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" \
-              web/firmware/rsvp-nano.bin \
-              web/firmware/rsvp-nano-ota.bin \
+              web/firmware/rsvp-nano-amoled.bin \
+              web/firmware/rsvp-nano-amoled-ota.bin \
               --clobber
           else
             gh release create "$RELEASE_TAG" \
-              web/firmware/rsvp-nano.bin \
-              web/firmware/rsvp-nano-ota.bin \
+              web/firmware/rsvp-nano-amoled.bin \
+              web/firmware/rsvp-nano-amoled-ota.bin \
               --title "$RELEASE_TAG" \
               --notes-file release-notes.md
           fi

@@ -15,11 +15,11 @@ WEB_FIRMWARE_DIR = ROOT / "web" / "firmware"
 BOOT_APP0_GLOB = "framework-arduinoespressif32*/tools/partitions/boot_app0.bin"
 
 EXPORTS = {
-    "waveshare_esp32s3_usb_msc": {
-        "binary": "rsvp-nano.bin",
-        "ota_binary": "rsvp-nano-ota.bin",
+    "amoled": {
+        "binary": "rsvp-nano-amoled.bin",
+        "ota_binary": "rsvp-nano-amoled-ota.bin",
         "manifest": "manifest.json",
-        "label": "RSVP Nano firmware",
+        "label": "RSVP Nano AMOLED firmware",
     },
 }
 
@@ -46,11 +46,37 @@ def pio_command() -> str:
 
 
 def git_version() -> str:
+    override = os.environ.get("RSVP_FIRMWARE_VERSION", "").strip()
+    if override:
+        return override
+
     try:
         value = subprocess.check_output(
-            ["git", "describe", "--tags", "--always", "--dirty"], cwd=ROOT, text=True
+            ["git", "describe", "--tags", "--exact-match"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
-        return value or "dev"
+        if value:
+            return value
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    try:
+        short_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet"],
+            cwd=ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) != 0
+        suffix = "-dirty" if dirty else ""
+        return f"dev-{short_sha}{suffix}" if short_sha else "dev"
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "dev"
 

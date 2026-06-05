@@ -397,14 +397,14 @@ Open the Xcode project from that folder when installing the app locally.
 To export browser-flasher and OTA firmware assets for a release:
 
 ```bash
-python3 tools/export_web_firmware.py --version v0.0.5
+python3 tools/export_web_firmware.py --version v0.1.0-amoled
 ```
 
 That writes:
 
 ```text
-web/firmware/rsvp-nano.bin
-web/firmware/rsvp-nano-ota.bin
+web/firmware/rsvp-nano-amoled.bin
+web/firmware/rsvp-nano-amoled-ota.bin
 web/firmware/manifest.json
 ```
 

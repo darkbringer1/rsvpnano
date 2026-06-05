@@ -15,11 +15,31 @@ def detect_version() -> str:
 
     try:
         value = subprocess.check_output(
-            ["git", "describe", "--tags", "--always", "--dirty"],
+            ["git", "describe", "--tags", "--exact-match"],
             cwd=PROJECT_DIR,
             text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
-        return value or "dev"
+        if value:
+            return value
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    try:
+        short_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            cwd=PROJECT_DIR,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet"],
+            cwd=PROJECT_DIR,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ) != 0
+        suffix = "-dirty" if dirty else ""
+        return f"dev-{short_sha}{suffix}" if short_sha else "dev"
     except (subprocess.CalledProcessError, FileNotFoundError):
         return "dev"
 

@@ -5,6 +5,7 @@
 #   ./flash.sh                 # auto-detect port, build + upload amoled env
 #   ./flash.sh -p /dev/cu.usbmodem1101   # explicit port
 #   ./flash.sh -e amoled       # pick env (default: amoled)
+#   ./flash.sh -v v0.1.0-amoled # stamp a clean firmware version
 #   ./flash.sh -m              # build + upload, then open serial monitor
 #
 # NOTE: the amoled build uses the TinyUSB stack, so once it is running the
@@ -16,11 +17,13 @@ set -euo pipefail
 ENV="amoled"
 PORT=""
 MONITOR=0
+VERSION=""
 
-while getopts "e:p:mh" opt; do
+while getopts "e:p:v:mh" opt; do
   case "$opt" in
     e) ENV="$OPTARG" ;;
     p) PORT="$OPTARG" ;;
+    v) VERSION="$OPTARG" ;;
     m) MONITOR=1 ;;
     h) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option" >&2; exit 1 ;;
@@ -50,8 +53,16 @@ else
   echo ">> port: auto (none detected; let esptool find it)"
 fi
 
+if [[ -n "$VERSION" ]]; then
+  echo ">> version: $VERSION"
+fi
+
 echo ">> building + flashing env '$ENV'..."
-"$PIO" run -e "$ENV" -t upload "${UPLOAD_ARGS[@]}"
+if [[ -n "$VERSION" ]]; then
+  RSVP_FIRMWARE_VERSION="$VERSION" "$PIO" run -e "$ENV" -t upload "${UPLOAD_ARGS[@]}"
+else
+  "$PIO" run -e "$ENV" -t upload "${UPLOAD_ARGS[@]}"
+fi
 
 echo ">> done. Cold-replug the device (unplug + replug) before judging the screen."
 

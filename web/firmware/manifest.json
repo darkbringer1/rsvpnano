@@ -1,9 +1,10 @@
 {
-  "name": "RSVP Nano",
-  "version": "v0.0.5",
+  "name": "RSVP Nano AMOLED",
+  "version": "dev",
   "new_install_prompt_erase": true,
   "new_install_improv_wait_time": 0,
   "features": [
+    "Waveshare ESP32-S3-Touch-AMOLED-1.8",
     "Books and articles library",
     "Device-hosted web companion",
     "RSS feed downloads",
@@ -15,7 +16,7 @@
       "improv": false,
       "parts": [
         {
-          "path": "rsvp-nano.bin",
+          "path": "rsvp-nano-amoled.bin",
           "offset": 0
         }
       ]
