@@ -18,6 +18,12 @@
 #include "text/LatinText.h"
 
 namespace {
+constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return static_cast<uint16_t>(((r & 0xF8U) << 8) |
+                                 ((g & 0xFCU) << 3) |
+                                 (b >> 3));
+}
+
 constexpr int kDisplayWidth = BoardConfig::DISPLAY_WIDTH;
 constexpr int kDisplayHeight = BoardConfig::DISPLAY_HEIGHT;
 constexpr int kPanelNativeWidth = BoardConfig::PANEL_NATIVE_WIDTH;
@@ -151,10 +157,6 @@ void mapPhysicalToLogical(BoardConfig::UiOrientation orientation, int physicalX,
       logicalY = kDisplayHeight - 1 - physicalX;
       break;
   }
-}
-
-uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
-  return static_cast<uint16_t>(((r & 0xF8U) << 8) | ((g & 0xFCU) << 3) | (b >> 3));
 }
 
 struct TinyGlyph {
@@ -887,6 +889,11 @@ void DisplayManager::setBrightnessPercent(uint8_t percent) {
   }
 }
 
+void DisplayManager::setBrightnessOverlay(const String &text) {
+  brightnessOverlayText_ = text;
+  lastRenderKey_ = "";
+}
+
 void DisplayManager::setDarkMode(bool darkMode) {
   if (darkMode_ == darkMode) {
     return;
@@ -947,6 +954,13 @@ void DisplayManager::setTypographyConfig(const TypographyConfig &config) {
 
 DisplayManager::TypographyConfig DisplayManager::typographyConfig() const {
   return activeTypographyConfig();
+}
+
+void DisplayManager::setScrollConfig(const ScrollConfig &config) {
+  scrollConfig_.fontSizeDivisor = std::max(1, std::min(3, config.fontSizeDivisor));
+  scrollConfig_.letterSpacingPx = std::max(0, std::min(8, config.letterSpacingPx));
+  scrollConfig_.wordSpacingPx = std::max(4, std::min(24, config.wordSpacingPx));
+  scrollConfig_.showSearchIcon = config.showSearchIcon;
 }
 
 bool DisplayManager::darkMode() const { return darkMode_; }
@@ -1452,7 +1466,7 @@ void DisplayManager::fillVirtualRect(int x, int y, int width, int height, uint16
 }
 
 void DisplayManager::drawSerifTextAt(const String &text, int x, int y, uint16_t color,
-                                     int divisor) {
+                                     int divisor, int letterSpacingPx) {
   divisor = std::max(1, divisor);
   int cursorX = x;
   const ReaderTypeface typeface = effectiveReaderTypefaceForText(text);
@@ -1467,6 +1481,7 @@ void DisplayManager::drawSerifTextAt(const String &text, int x, int y, uint16_t 
       tracked -= opticalKerningAdjustment(
           text[i], text[i + 1], xOffset, width, tracked,
           scaledSignedAdvance(nextGlyph.xOffset, divisor), scaledDesiredGap(divisor));
+      tracked += letterSpacingPx;
     }
     cursorX += std::max(1, tracked);
   }
@@ -1538,6 +1553,34 @@ void DisplayManager::drawTinyGlyph(int x, int y, char c, uint16_t color, int sca
   }
 }
 
+void DisplayManager::drawTinyTextAt180(const String &text, int x, int y, uint16_t color,
+                                       int scale) {
+  const uint16_t panel = panelColor(color);
+  const int n = static_cast<int>(text.length());
+  for (int ci = 0; ci < n; ++ci) {
+    const int charBaseX = x + (n - 1 - ci) * (kTinyGlyphWidth + kTinyGlyphSpacing) * scale;
+    const uint8_t *rows = tinyRowsFor(text[ci]);
+    for (int row = 0; row < kTinyGlyphHeight; ++row) {
+      const int dstRow = kTinyGlyphHeight - 1 - row;
+      for (int col = 0; col < kTinyGlyphWidth; ++col) {
+        if ((rows[row] & (1 << (kTinyGlyphWidth - 1 - col))) == 0) {
+          continue;
+        }
+        const int dstCol = kTinyGlyphWidth - 1 - col;
+        for (int yy = 0; yy < scale; ++yy) {
+          const int dstY = y + dstRow * scale + yy;
+          if (dstY < 0 || dstY >= kVirtualBufferHeight) continue;
+          for (int xx = 0; xx < scale; ++xx) {
+            const int dstX = charBaseX + dstCol * scale + xx;
+            if (dstX < 0 || dstX >= kVirtualBufferWidth) continue;
+            virtualFrame_[dstY * kVirtualBufferWidth + dstX] = panel;
+          }
+        }
+      }
+    }
+  }
+}
+
 void DisplayManager::drawTinyTextAt(const String &text, int x, int y, uint16_t color, int scale) {
   int cursorX = x;
   for (size_t i = 0; i < text.length(); ++i) {
@@ -1583,6 +1626,40 @@ void DisplayManager::drawBatteryBadge(int logicalWidth, int logicalHeight) {
   const int x = std::max(kFooterMarginX, logicalWidth - kFooterMarginX - width);
   const int y = logicalHeight > (kDisplayHeight * 2) ? kFooterMarginBottom + 8 : kFooterMarginBottom;
   drawTinyTextAt(batteryLabel_, x, y, footerColor(), kTinyScale);
+}
+
+void DisplayManager::drawBrightnessToastBadge(const String &text) {
+  // Sun icon pixel pattern (5x7), drawn at kTinyScale
+  static constexpr uint8_t kSunRows[kTinyGlyphHeight] = {
+    0x0A, // .X.X.
+    0x04, // ..X..
+    0x0E, // .XXX.
+    0x1F, // XXXXX
+    0x0E, // .XXX.
+    0x04, // ..X..
+    0x0A, // .X.X.
+  };
+
+  const int textWidth = measureTinyTextWidth(text, kTinyScale);
+  const int iconW = kTinyGlyphWidth * kTinyScale;
+  const int iconSpacing = 4;
+  const int totalWidth = iconW + iconSpacing + textWidth;
+  const int batteryW = batteryLabel_.isEmpty()
+                           ? 0
+                           : measureTinyTextWidth(batteryLabel_, kTinyScale) + 10;
+  const int rightEdge = logicalWidth() - kFooterMarginX - batteryW;
+  const int x = rightEdge - totalWidth - 4;
+  const int y = kFooterMarginBottom;
+
+  const uint16_t color = focusColor();
+  for (int row = 0; row < kTinyGlyphHeight; ++row) {
+    for (int col = 0; col < kTinyGlyphWidth; ++col) {
+      if (kSunRows[row] & (1 << (kTinyGlyphWidth - 1 - col))) {
+        fillVirtualRect(x + col * kTinyScale, y + row * kTinyScale, kTinyScale, kTinyScale, color);
+      }
+    }
+  }
+  drawTinyTextAt(text, x + iconW + iconSpacing, y, color, kTinyScale);
 }
 
 void DisplayManager::drawPreviousSentenceHint() {
@@ -1740,6 +1817,9 @@ void DisplayManager::applyBrightness() {
 
 void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHeight) {
   tickerPlaybackFrameActive_ = false;
+  if (!brightnessOverlayText_.isEmpty()) {
+    drawBrightnessToastBadge(brightnessOverlayText_);
+  }
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
        nativeYStart += kMaxChunkPhysicalRows) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
@@ -1933,13 +2013,13 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
                                            const String &afterText, uint8_t fontSizeLevel,
                                            const String &chapterLabel, uint8_t progressPercent,
                                            bool showFooter, const String &footerStatusLabel,
-                                           ReaderChrome chrome) {
+                                           ReaderChrome chrome, const String &overlayText) {
   const String renderKey =
       "rsvp_phantom|" + beforeText + "|" + word + "|" + afterText + "|s:" +
       String(fontSizeLevel) + "|" + chapterLabel + "|" + String(progressPercent) + "|" +
-      String(showFooter ? 1 : 0) + "|f:" + footerStatusLabel + "|b:" + batteryLabel_ +
-      "|rc:" + readerChromeKey(chrome) + "|d:" + String(darkMode_ ? 1 : 0) + "|n:" +
-      String(nightMode_ ? 1 : 0);
+      String(showFooter ? 1 : 0) + "|f:" + footerStatusLabel + "|o:" + overlayText + "|b:" +
+      batteryLabel_ + "|rc:" + readerChromeKey(chrome) + "|d:" + String(darkMode_ ? 1 : 0) +
+      "|n:" + String(nightMode_ ? 1 : 0);
   if (!initialized_ || renderKey == lastRenderKey_) {
     return;
   }
@@ -1972,6 +2052,9 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
       const int afterX =
           currentX + currentLayout.maxX + kPhantomCurrentGapMedium - afterLayout.minX;
       drawSerif70TextAt(afterText, afterX, textY, phantomColor);
+    }
+    if (!overlayText.isEmpty()) {
+      drawBrightnessToastBadge(overlayText);
     }
     if (showFooter) {
       drawFooter(chapterLabel, footerStatusLabel.isEmpty() ? String(progressPercent) + "%"
@@ -2017,6 +2100,9 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
         serifWordLayoutScaledPercent(afterText, -1, style.scalePercent);
     const int afterX = currentX + currentLayout.maxX + style.currentGap - afterLayout.minX;
     drawSerifTextScaledAt(afterText, afterX, textY, phantomColor, style.scalePercent);
+  }
+  if (!overlayText.isEmpty()) {
+    drawBrightnessToastBadge(overlayText);
   }
   if (showFooter) {
     drawFooter(chapterLabel, footerStatusLabel.isEmpty() ? String(progressPercent) + "%"
@@ -2486,9 +2572,12 @@ void DisplayManager::renderScrollView(const std::vector<ContextWord> &words, uin
   const int textTop = kScrollTop;
   const int textBottom = virtualHeight - footerReserve - overlayReserve;
   const ReaderTypeface contextTypeface = currentReaderTypeface();
+  const int serifDivisor = scrollConfig_.fontSizeDivisor;
+  const int letterSpacing = scrollConfig_.letterSpacingPx;
+  const int wordSpacing = scrollConfig_.wordSpacingPx;
   const int contextGlyphHeight = std::max(
-      1, (baseGlyphHeightForTypeface(contextTypeface) + kScrollSerifDivisor - 1) /
-             kScrollSerifDivisor);
+      1, (baseGlyphHeightForTypeface(contextTypeface) + serifDivisor - 1) /
+             serifDivisor);
   const int maxLineWidth = virtualWidth - (kScrollMarginX * 2);
 
   size_t currentLocalIndex = 0;
@@ -2522,8 +2611,9 @@ void DisplayManager::renderScrollView(const std::vector<ContextWord> &words, uin
         break;
       }
 
-      const int wordWidth = measureSerifTextWidth(words[index].text, kScrollSerifDivisor);
-      const int gap = (index == line.start) ? 0 : kScrollSpaceWidth;
+      const int wordWidth = measureSerifTextWidth(words[index].text, serifDivisor)
+                            + letterSpacing * std::max(0, (int)words[index].text.length() - 1);
+      const int gap = (index == line.start) ? 0 : wordSpacing;
       if (index > line.start && lineWidth + gap + wordWidth > maxLineWidth) {
         break;
       }
@@ -2620,9 +2710,11 @@ void DisplayManager::renderScrollView(const std::vector<ContextWord> &words, uin
       const uint16_t color =
           (word.current && currentFocusHighlightEnabled()) ? focusColor() : wordColor();
       const String visibleWord =
-          fitSerifText(word.text, virtualWidth - x - kScrollMarginX, kScrollSerifDivisor);
-      drawSerifTextAt(visibleWord, x, lineY, color, kScrollSerifDivisor);
-      x += measureSerifTextWidth(visibleWord, kScrollSerifDivisor) + kScrollSpaceWidth;
+          fitSerifText(word.text, virtualWidth - x - kScrollMarginX, serifDivisor);
+      drawSerifTextAt(visibleWord, x, lineY, color, serifDivisor, letterSpacing);
+      x += measureSerifTextWidth(visibleWord, serifDivisor)
+           + letterSpacing * std::max(0, (int)visibleWord.length() - 1)
+           + wordSpacing;
     }
   }
 
@@ -2635,6 +2727,11 @@ void DisplayManager::renderScrollView(const std::vector<ContextWord> &words, uin
   drawFooter(chapterLabel, footerStatusLabel.isEmpty() ? String(progressPercent) + "%"
                                                        : footerStatusLabel,
              chrome);
+  if (scrollConfig_.showSearchIcon && showFooterRow) {
+    const int iconY = virtualHeight - kTinyGlyphHeight * kTinyScale - kFooterMarginBottom;
+    const int iconX = virtualWidth / 2 - measureTinyTextWidth("Q", kTinyScale) / 2;
+    drawTinyTextAt("Q", iconX, iconY, focusColor(), kTinyScale);
+  }
   if (chrome.showPreviousSentenceHint) {
     drawPreviousSentenceHint();
   }
@@ -3278,6 +3375,35 @@ void DisplayManager::renderFocusTimerScreen(const String &mode, const String &ge
     }
   };
 
+  auto drawTinyTextAt180Clipped = [&](const String &text, int x, int y, uint16_t color, int scale,
+                                      int clipX, int clipY, int clipWidth, int clipHeight) {
+    if (clipWidth <= 0 || clipHeight <= 0) return;
+    const int clipXEnd = clipX + clipWidth;
+    const int clipYEnd = clipY + clipHeight;
+    const uint16_t panel = panelColor(color);
+    const int n = static_cast<int>(text.length());
+    for (int ci = 0; ci < n; ++ci) {
+      const int charBaseX = x + (n - 1 - ci) * (kTinyGlyphWidth + kTinyGlyphSpacing) * scale;
+      const uint8_t *rows = tinyRowsFor(text[ci]);
+      for (int row = 0; row < kTinyGlyphHeight; ++row) {
+        const int dstRow = kTinyGlyphHeight - 1 - row;
+        for (int col = 0; col < kTinyGlyphWidth; ++col) {
+          if ((rows[row] & (1 << (kTinyGlyphWidth - 1 - col))) == 0) continue;
+          const int dstCol = kTinyGlyphWidth - 1 - col;
+          for (int yy = 0; yy < scale; ++yy) {
+            const int dstY = y + dstRow * scale + yy;
+            if (dstY < 0 || dstY >= kVirtualBufferHeight || dstY < clipY || dstY >= clipYEnd) continue;
+            for (int xx = 0; xx < scale; ++xx) {
+              const int dstX = charBaseX + dstCol * scale + xx;
+              if (dstX < 0 || dstX >= kVirtualBufferWidth || dstX < clipX || dstX >= clipXEnd) continue;
+              virtualFrame_[dstY * kVirtualBufferWidth + dstX] = panel;
+            }
+          }
+        }
+      }
+    }
+  };
+
   auto centeredXForTiny = [&](const String &text, int scale) {
     const int textWidth = measureTinyTextWidth(text, scale);
     return std::max(contentX, contentX + ((contentWidth - textWidth) / 2));
@@ -3318,7 +3444,30 @@ void DisplayManager::renderFocusTimerScreen(const String &mode, const String &ge
     const int timerX = centeredXForTiny(timer, timerScale);
 
     drawTinyTextAt(mode, titleX, titleY, baseTextColor, titleScale);
-    drawTinyTextAt(timer, timerX, timerY, baseTextColor, timerScale);
+    drawTinyTextAt(timer, timerX, timerY, accent, timerScale);
+
+    if (!footer.isEmpty()) {
+      int footerScale = titleScale;
+      while (footerScale > 1 && measureTinyTextWidth(footer, footerScale) > contentWidth) {
+        --footerScale;
+      }
+      // Mirror titleY padding: same distance from bottom as titleY is from top
+      const int footerY = virtualHeight - titleY - (kTinyGlyphHeight * footerScale);
+      const int footerX = centeredXForTiny(footer, footerScale);
+      drawTinyTextAt180(footer, footerX, footerY, baseTextColor, footerScale);
+      if (fillWidth > 0 && fillHeight > 0) {
+        drawTinyTextAt180Clipped(footer, footerX, footerY, inverseTextColor, footerScale,
+                                 fillX, fillY, fillWidth, fillHeight);
+      }
+      if (portraitFocusLayout) {
+        // Divider mirrored: same gap above text as BEGIN's divider is below BEGIN
+        const int footerDividerWidth =
+            std::min(contentWidth, 40 + (static_cast<int>(footer.length()) * 12));
+        const int footerDividerX = contentX + ((contentWidth - footerDividerWidth) / 2);
+        const int footerDividerY = footerY - 20 - 2;
+        fillVirtualRect(footerDividerX, footerDividerY, footerDividerWidth, 2, accent);
+      }
+    }
 
     if (fillWidth > 0 && fillHeight > 0) {
       drawTinyTextAtClipped(mode, titleX, titleY, inverseTextColor, titleScale, fillX, fillY,
@@ -3342,26 +3491,43 @@ void DisplayManager::renderFocusTimerScreen(const String &mode, const String &ge
       const int dividerWidth =
           std::min(contentWidth, 40 + (static_cast<int>(mode.length()) * 12));
       const int dividerX = contentX + ((contentWidth - dividerWidth) / 2);
-      fillVirtualRect(dividerX, dividerY, dividerWidth, 2, instructionColor);
+      fillVirtualRect(dividerX, dividerY, dividerWidth, 2, accent);
     }
 
     drawTinyTextAt(mode, centeredXForTiny(mode, titleScale), titleY, baseTextColor, titleScale);
 
-    if (!instruction.isEmpty()) {
-      const std::vector<String> lines =
-          wrapTinyLines(instruction, instructionBlockWidth, instructionScale);
-      const int lineHeight = (kTinyGlyphHeight * instructionScale) + instructionScale + 4;
-      int y = titleY + (kTinyGlyphHeight * titleScale) + (portrait ? 42 : 28);
-      if (portraitFocusLayout) {
-        y = dividerY + 66;
+    const std::vector<String> lines = wrapTinyLines(instruction, instructionBlockWidth, instructionScale);
+    const int lineHeight = (kTinyGlyphHeight * instructionScale) + instructionScale + 4;
+    int y = titleY + (kTinyGlyphHeight * titleScale) + (portrait ? 42 : 28);
+    if (portraitFocusLayout) {
+      y = dividerY + 66;
+    }
+
+    if (!timer.isEmpty()) {
+      int timerStaticScale = portrait ? 4 : 5;
+      while (timerStaticScale > 1 && measureTinyTextWidth(timer, timerStaticScale) > contentWidth) {
+        --timerStaticScale;
       }
-      for (const String &line : lines) {
-        drawTinyTextAt(line,
-                       centeredXWithin(line, instructionScale, instructionBlockX,
-                                       instructionBlockWidth),
-                       y, instructionColor, instructionScale);
-        y += lineHeight;
-      }
+      drawTinyTextAt(timer, centeredXForTiny(timer, timerStaticScale), y, accent,
+                     timerStaticScale);
+      y += (kTinyGlyphHeight * timerStaticScale) + timerStaticScale + 20;
+    }
+
+    // First paragraph (e.g. "Tap To Change") → baseTextColor (white)
+    // Second paragraph (e.g. "Place to Start") → instructionColor (accent)
+    const int newlinePos = instruction.indexOf('\n');
+    const String instructionPart1 = (newlinePos >= 0) ? instruction.substring(0, newlinePos) : instruction;
+    const std::vector<String> part1Lines = wrapTinyLines(instructionPart1, instructionBlockWidth, instructionScale);
+    const size_t part1Count = (newlinePos >= 0) ? part1Lines.size() : 0;
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+      const String &line = lines[i];
+      const uint16_t lineColor = (i < part1Count) ? baseTextColor : instructionColor;
+      drawTinyTextAt(line,
+                     centeredXWithin(line, instructionScale, instructionBlockX,
+                                     instructionBlockWidth),
+                     y, lineColor, instructionScale);
+      y += lineHeight;
     }
   }
 
