@@ -51,19 +51,29 @@ pio run -e amoled -t upload
 
 ---
 
-## Controls (single button + touch)
+## Controls (two buttons + touch)
 
-The bar board had BOOT + PWR. This board has only BOOT, so the control scheme is
-remapped:
+This board has BOOT and PWR. BOOT is a normal GPIO; PWR is the **AXP2101 PMU
+PWRKEY** (not a GPIO) and is polled from the PMU IRQ. All physical-button
+handling is routed through one place — `App::dispatchButtons()`, with a
+canonical button-map comment above it (the single source of truth).
 
 | Input | Action |
 |-------|--------|
 | Touch & hold (reader) | Read (RSVP advances while held) |
 | Release | Pause |
 | Vertical swipe (menu) | Scroll the list |
+| Horizontal swipe right (menu) | Go back one level / resume |
 | **Double-tap (menu)** | Select the highlighted item |
 | BOOT short press | Open / back out of the menu |
 | BOOT long press | Cycle brightness |
+| PWR short press | Ignored (avoids accidental power-off) |
+| PWR long press (hold) | Power off ("Goodbye" + PMU shutdown) |
+| PWR hold while off | Power on (PMU; BOOT/touch cannot power on) |
+
+On USB, a true power-off can't hold (VBUS keeps the PMU fed), so power-off
+deep-sleeps the device dark instead; on battery the PMU cuts the rail and only
+a PWR hold powers back on.
 
 ### Double-tap to select
 
@@ -115,29 +125,40 @@ storage device, so books/articles can be copied without removing the card.
 
 ---
 
-## Battery (AXP2101)
+## Power management (AXP2101 PMU)
 
-Battery telemetry is read from the **AXP2101 PMU** over the `Wire` bus at 0x34
-(`readBatteryStatusAxp2101` in `src/board/BoardConfig.cpp`).
+The **AXP2101 PMU** (`Wire` bus, 0x34) owns the main rail and the PWR button. It
+is driven through **XPowersLib** (`src/board/BoardConfig.cpp`, guarded by
+`BOARD_AMOLED_18`).
 
-- **Read-only and safe:** only ADC/status registers are read, and at most a
-  read-modify-write to the ADC-enable register (0x30). Power-rail (DCDC/LDO)
-  registers are never written — a bad write there would brown out the board.
-- Battery voltage is read from registers 0x34/0x35 (14-bit mV) and converted to a
-  percentage with the existing discharge curve (`batteryPercentForVoltage`).
-- If no PMU ACKs or no battery is attached, `readBatteryStatus` returns `false`
-  and the UI simply shows no battery — identical to previous behavior.
+- **PWR button = PWRKEY.** `pmuPollPowerKey()` reads the PMU's PWRKEY IRQ (short
+  vs long press); `App::updatePmuPowerKey()` maps long-press → power off.
+- **Real power off.** `pmuShutdown()` cuts the rail on battery. On USB, VBUS keeps
+  the PMU alive, so `enterPowerOff()` checks `pmuVbusPresent()` and deep-sleeps
+  the device dark instead of shutting down (avoids a VBUS-triggered reboot loop).
+  PWR press-on/off timing is set via `setPowerKeyPressOnTime/OffTime`.
+- **Battery telemetry** comes from the same PMU: `getBatteryPercent()`,
+  `getBattVoltage()`, `isCharging()`, `isBatteryConnect()`, `isVbusIn()`.
 
-> **UNVERIFIED ON HARDWARE.** This was written without a battery attached. When a
-> battery is connected, verify the reported voltage in the serial log
-> (`[power] battery x.xx V ...`). If it reads wrong, the suspect registers
-> (0x34/0x35 format, ADC-enable bit) are documented inline in `BoardConfig.cpp`.
+> **Battery path UNVERIFIED.** Developed on USB only (no battery). True power-off
+> rail-cut and PWR-hold-to-power-on are only fully testable on battery. On USB
+> the boot log shows `[boot] RTC present: … | PMU VBUS:1 BAT:0 …`.
 
-**Known limitation:** the critical-battery auto-shutoff (`handleBatteryProtection`
-→ `releaseBatteryPowerHold`) cuts power via the TCA9554 on the bar board's
-`Wire1`. On the AMOLED board power is held by the AXP2101, so the protective
-shutdown won't actually cut power. Harmless without a battery; revisit when audio
-/ PMU power management is ported.
+---
+
+## Clock + reading streak (PCF85063 RTC)
+
+The board's **PCF85063 RTC** (`Wire` bus, 0x51) keeps wall-clock time, used for the
+reading streak. Hand-rolled BCD driver in `BoardConfig.cpp`
+(`rtcRead`/`rtcWrite`/`rtcPresent`).
+
+- **RTC stores UTC**; the timezone offset is applied on read (`App::localNow`), so
+  changing the zone is instant — no clock rewrite.
+- **Settings > Clock**: sync over Wi-Fi (NTP + geo-IP timezone auto-detect via
+  `ip-api.com`), manual timezone (1h steps), or manual date/time (field-cycle
+  rows that write the RTC live, leap-year aware).
+- **Streak**: entering Playing marks today (local day); consecutive days increment,
+  a gap resets. Shown on the Reading stats screen with the clock + zone.
 
 ---
 
@@ -167,7 +188,12 @@ fork for OTA to pick them up.
 | Reader (RSVP, hold-to-read, WPM, scrub) | ✅ Working | |
 | Touch (FT3168) | ✅ Working | Self-heals after screen-off; no longer dies until reboot |
 | Menu (BOOT button) + double-tap select | ✅ Working | |
+| Swipe-right back (menu) | ✅ New | |
 | Brightness (BOOT long-press) | ✅ Working | |
+| PWR button + real power off (AXP2101) | ✅ Working | USB deep-sleeps dark; battery rail-cut UNVERIFIED |
+| Clock / timezone (PCF85063 RTC) | ✅ New | NTP + geo-IP auto-tz; manual set in Settings > Clock |
+| Book completion summary | ✅ New | |
+| Reading stats + streak | ✅ New | Streak needs day rollover to fully verify |
 | Focus Timer + IMU (tap/hold/flip) | ✅ Working | |
 | Companion sync (exit → menu) | ✅ Working | |
 | Idle auto-standby + screensavers | ✅ New (this port) | Needs on-device confirmation |
@@ -182,9 +208,12 @@ fork for OTA to pick them up.
 
 ## Changed files (this round)
 
-- `platformio.ini` — AMOLED env: TinyUSB + USB MSC enabled.
+- `platformio.ini` — AMOLED env: TinyUSB + USB MSC enabled; XPowersLib dependency.
 - `src/update/OtaUpdater.{h,cpp}` — OTA source hard-locked to the fork.
 - `docs/ota.conf.example` — documents the lock.
-- `src/board/BoardConfig.cpp` — AXP2101 read-only battery path.
-- `src/app/App.{h,cpp}` — double-tap menu select; idle auto-standby + wake.
+- `src/board/BoardConfig.{h,cpp}` — AXP2101 PMU via XPowersLib (PWR button,
+  real power-off, battery); PCF85063 RTC driver.
+- `src/app/App.{h,cpp}` — double-tap menu select; idle auto-standby + wake;
+  central `dispatchButtons()` + button map; swipe-right back; book completion
+  screen; reading stats + streak; Settings > Clock (NTP + auto-timezone).
 - `src/input/TouchHandler.{h,cpp}` — touch self-heal (bus restart + re-probe) instead of permanent disable after read failures.
