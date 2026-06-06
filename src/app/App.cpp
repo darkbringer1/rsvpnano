@@ -263,40 +263,6 @@ constexpr const char *kPrefLifetimeMs = "lt_ms";
 constexpr const char *kPrefLifetimeBooks = "lt_books";
 constexpr const char *kPrefStreakDays = "streak";
 constexpr const char *kPrefStreakLastDay = "streak_day";
-constexpr const char *kPrefTimezoneOffset = "tz_off";
-
-// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm). Used to
-// compare calendar days for the streak and to convert between UTC and local.
-int32_t civilDayNumber(int year, int month, int day) {
-  year -= month <= 2;
-  const int era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy =
-      (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + static_cast<unsigned>(day) - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int>(doe) - 719468;
-}
-
-// Inverse of civilDayNumber: day-count since 1970-01-01 -> civil date.
-void civilFromDayNumber(int32_t z, int &year, int &month, int &day) {
-  z += 719468;
-  const int era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  const int y = static_cast<int>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
-  month = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
-  year = y + (month <= 2);
-}
-
-// Floor division (rounds toward negative infinity) for time-of-day west of UTC.
-int64_t floorDiv(int64_t a, int64_t b) {
-  const int64_t q = a / b;
-  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
-}
-
 uint8_t daysInMonth(uint16_t year, uint8_t month) {
   static const uint8_t kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   if (month < 1 || month > 12) {
@@ -566,7 +532,22 @@ App::App()
             menuScreen_ = textEntryReturnScreen_;
             textEntry_.close();
             renderMenu();
-          }) {}
+          }),
+      clock_(
+          display_, preferences_,
+          [this](const char *label, uint32_t nowMs) {
+            return blockNetworkActionForOtaCheck(label, nowMs);
+          },
+          [this](String &ssid, String &password) {
+            const OtaUpdater::Config cfg = preferredOtaConfig();
+            if (cfg.wifiSsid.isEmpty()) {
+              return false;
+            }
+            ssid = cfg.wifiSsid;
+            password = cfg.wifiPassword;
+            return true;
+          },
+          [this]() { updateStreakForToday(); }) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
   const char *reset = "?";
@@ -606,7 +587,7 @@ void App::begin() {
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   loadLifetimeStats();
-  timezoneOffsetMinutes_ = preferences_.getInt(kPrefTimezoneOffset, 0);
+  clock_.loadSettings();
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
@@ -3493,20 +3474,6 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
   }
 }
 
-String App::timezoneLabel() const {
-  if (timezoneOffsetMinutes_ == 0) {
-    return "UTC";
-  }
-  const int absMin = timezoneOffsetMinutes_ < 0 ? -timezoneOffsetMinutes_ : timezoneOffsetMinutes_;
-  String s = String("UTC") + (timezoneOffsetMinutes_ > 0 ? "+" : "-") + String(absMin / 60);
-  if (absMin % 60 != 0) {
-    char buf[5];
-    std::snprintf(buf, sizeof(buf), ":%02d", absMin % 60);
-    s += buf;
-  }
-  return s;
-}
-
 void App::scanWifiNetworks() {
   if (blockNetworkActionForOtaCheck("Wi-Fi", millis())) {
     return;
@@ -3802,22 +3769,23 @@ void App::rebuildSettingsMenuItems() {
     char buf[8];
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Sync via Wi-Fi");
-    settingsMenuItems_.push_back("Timezone: " + timezoneLabel());
-    std::snprintf(buf, sizeof(buf), "%04u", clockEdit_.year);
+    settingsMenuItems_.push_back("Timezone: " + clock_.timezoneLabel());
+    const BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
+    std::snprintf(buf, sizeof(buf), "%04u", clockEdit.year);
     settingsMenuItems_.push_back(String("Year: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.month);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.month);
     settingsMenuItems_.push_back(String("Month: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.day);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.day);
     settingsMenuItems_.push_back(String("Day: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.hour);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.hour);
     settingsMenuItems_.push_back(String("Hour: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.minute);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.minute);
     settingsMenuItems_.push_back(String("Minute: ") + buf);
     BoardConfig::RtcDateTime now;
     int32_t day = 0;
-    if (localNow(now, day)) {
+    if (clock_.localNow(now, day)) {
       std::snprintf(buf, sizeof(buf), "%02u:%02u", now.hour, now.minute);
-      settingsMenuItems_.push_back(String("Now: ") + buf + " " + timezoneLabel());
+      settingsMenuItems_.push_back(String("Now: ") + buf + " " + clock_.timezoneLabel());
     } else {
       settingsMenuItems_.push_back("Now: not set");
     }
@@ -5495,36 +5463,12 @@ void App::loadLifetimeStats() {
   lifetimeStatsDirty_ = false;
 }
 
-bool App::localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const {
-  // RTC stores UTC; apply the timezone offset here so the offset can change
-  // without rewriting the clock.
-  BoardConfig::RtcDateTime utc;
-  if (!BoardConfig::rtcRead(utc) || !utc.valid) {
-    return false;
-  }
-  int64_t epoch = static_cast<int64_t>(civilDayNumber(utc.year, utc.month, utc.day)) * 86400 +
-                  utc.hour * 3600 + utc.minute * 60 + utc.second;
-  epoch += static_cast<int64_t>(timezoneOffsetMinutes_) * 60;
-  outDayNumber = static_cast<int32_t>(floorDiv(epoch, 86400));
-  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(outDayNumber) * 86400);
-  int y, m, d;
-  civilFromDayNumber(outDayNumber, y, m, d);
-  outLocal.year = static_cast<uint16_t>(y);
-  outLocal.month = static_cast<uint8_t>(m);
-  outLocal.day = static_cast<uint8_t>(d);
-  outLocal.hour = static_cast<uint8_t>(secOfDay / 3600);
-  outLocal.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
-  outLocal.second = static_cast<uint8_t>(secOfDay % 60);
-  outLocal.valid = true;
-  return true;
-}
-
 void App::updateStreakForToday() {
   // Count today (local) as a reading day. Needs a valid RTC; if the clock was
   // never set we silently skip until the time is available.
   BoardConfig::RtcDateTime local;
   int32_t today = 0;
-  if (!localNow(local, today)) {
+  if (!clock_.localNow(local, today)) {
     return;
   }
 
@@ -5597,14 +5541,14 @@ void App::openReadingStats() {
   // Reading streak + clock state (PCF85063 RTC, shown in local time).
   BoardConfig::RtcDateTime now;
   int32_t today = 0;
-  const bool haveClock = localNow(now, today);
+  const bool haveClock = clock_.localNow(now, today);
   if (haveClock) {
     readingStatsItems_.push_back(String("Streak: ") + String(streakDays_) + " days");
     char clockBuf[24];
     std::snprintf(clockBuf, sizeof(clockBuf), "%04u-%02u-%02u %02u:%02u", now.year, now.month,
                   now.day, now.hour, now.minute);
     readingStatsItems_.push_back(String("Clock: ") + clockBuf);
-    readingStatsItems_.push_back(String("Zone: ") + timezoneLabel());
+    readingStatsItems_.push_back(String("Zone: ") + clock_.timezoneLabel());
   } else {
     readingStatsItems_.push_back("Streak: clock not set");
     readingStatsItems_.push_back("Set in Settings > Clock");
@@ -5629,38 +5573,20 @@ void App::selectReadingStatsItem(uint32_t nowMs) {
   renderMainMenu();
 }
 
-void App::writeLocalToRtc(const BoardConfig::RtcDateTime &local) {
-  int64_t epoch = static_cast<int64_t>(civilDayNumber(local.year, local.month, local.day)) * 86400 +
-                  local.hour * 3600 + local.minute * 60 + local.second;
-  epoch -= static_cast<int64_t>(timezoneOffsetMinutes_) * 60;  // local -> UTC
-  const int32_t day = static_cast<int32_t>(floorDiv(epoch, 86400));
-  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(day) * 86400);
-  int y, m, d;
-  civilFromDayNumber(day, y, m, d);
-  BoardConfig::RtcDateTime utc;
-  utc.year = static_cast<uint16_t>(y);
-  utc.month = static_cast<uint8_t>(m);
-  utc.day = static_cast<uint8_t>(d);
-  utc.hour = static_cast<uint8_t>(secOfDay / 3600);
-  utc.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
-  utc.second = static_cast<uint8_t>(secOfDay % 60);
-  utc.valid = true;
-  BoardConfig::rtcWrite(utc);
-}
-
 void App::openClockSettings() {
+  BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
   BoardConfig::RtcDateTime local;
   int32_t day = 0;
-  if (localNow(local, day)) {
-    clockEdit_ = local;
+  if (clock_.localNow(local, day)) {
+    clockEdit = local;
   } else {
-    clockEdit_ = BoardConfig::RtcDateTime{};
-    clockEdit_.year = 2026;
-    clockEdit_.month = 1;
-    clockEdit_.day = 1;
-    clockEdit_.hour = 12;
+    clockEdit = BoardConfig::RtcDateTime{};
+    clockEdit.year = 2026;
+    clockEdit.month = 1;
+    clockEdit.day = 1;
+    clockEdit.hour = 12;
   }
-  clockEdit_.second = 0;
+  clockEdit.second = 0;
   menuScreen_ = MenuScreen::SettingsClock;
   settingsSelectedIndex_ = kSettingsClockSyncIndex;
   rebuildSettingsMenuItems();
@@ -5668,6 +5594,7 @@ void App::openClockSettings() {
 }
 
 void App::selectClockSettingsItem(uint32_t nowMs) {
+  BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
       settingsSelectedIndex_ = kSettingsHomeClockIndex;
@@ -5676,11 +5603,11 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
       renderSettings();
       return;
     case kSettingsClockSyncIndex: {
-      syncClockFromNetwork(nowMs);
+      clock_.syncFromNetwork(nowMs);
       BoardConfig::RtcDateTime local;
       int32_t day = 0;
-      if (localNow(local, day)) {
-        clockEdit_ = local;
+      if (clock_.localNow(local, day)) {
+        clockEdit = local;
       }
       menuScreen_ = MenuScreen::SettingsClock;
       settingsSelectedIndex_ = kSettingsClockSyncIndex;
@@ -5689,27 +5616,24 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
       return;
     }
     case kSettingsClockTimezoneIndex:
-      // Cycle UTC offset by 1h, -12h..+14h wrapping. Applied on read -> instant.
-      timezoneOffsetMinutes_ =
-          (timezoneOffsetMinutes_ >= 14 * 60) ? -12 * 60 : timezoneOffsetMinutes_ + 60;
-      preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
+      clock_.cycleTimezone();
       break;
     case kSettingsClockYearIndex:
-      clockEdit_.year = (clockEdit_.year >= 2099) ? 2020 : clockEdit_.year + 1;
+      clockEdit.year = (clockEdit.year >= 2099) ? 2020 : clockEdit.year + 1;
       break;
     case kSettingsClockMonthIndex:
-      clockEdit_.month = (clockEdit_.month >= 12) ? 1 : clockEdit_.month + 1;
+      clockEdit.month = (clockEdit.month >= 12) ? 1 : clockEdit.month + 1;
       break;
     case kSettingsClockDayIndex:
-      clockEdit_.day = (clockEdit_.day >= daysInMonth(clockEdit_.year, clockEdit_.month))
-                           ? 1
-                           : clockEdit_.day + 1;
+      clockEdit.day = (clockEdit.day >= daysInMonth(clockEdit.year, clockEdit.month))
+                          ? 1
+                          : clockEdit.day + 1;
       break;
     case kSettingsClockHourIndex:
-      clockEdit_.hour = (clockEdit_.hour >= 23) ? 0 : clockEdit_.hour + 1;
+      clockEdit.hour = (clockEdit.hour >= 23) ? 0 : clockEdit.hour + 1;
       break;
     case kSettingsClockMinuteIndex:
-      clockEdit_.minute = (clockEdit_.minute >= 59) ? 0 : clockEdit_.minute + 1;
+      clockEdit.minute = (clockEdit.minute >= 59) ? 0 : clockEdit.minute + 1;
       break;
     default:
       return;  // status row, etc.
@@ -5718,158 +5642,15 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
   // For the manual date/time rows, keep the day valid and write the RTC live.
   if (settingsSelectedIndex_ >= kSettingsClockYearIndex &&
       settingsSelectedIndex_ <= kSettingsClockMinuteIndex) {
-    const uint8_t maxDay = daysInMonth(clockEdit_.year, clockEdit_.month);
-    if (clockEdit_.day > maxDay) {
-      clockEdit_.day = maxDay;
+    const uint8_t maxDay = daysInMonth(clockEdit.year, clockEdit.month);
+    if (clockEdit.day > maxDay) {
+      clockEdit.day = maxDay;
     }
-    writeLocalToRtc(clockEdit_);
+    clock_.writeLocalToRtc(clockEdit);
     updateStreakForToday();
   }
   rebuildSettingsMenuItems();
   renderSettings();
-}
-
-bool App::fetchTimezoneOffsetMinutes(int &outMinutes) {
-  // ip-api.com returns the UTC offset (seconds, includes DST) for the device's
-  // public IP. Free, HTTP, no key. Hand-parse the "offset" integer.
-  HTTPClient http;
-  WiFiClient client;
-  if (!http.begin(client, "http://ip-api.com/json/?fields=status,offset")) {
-    return false;
-  }
-  http.setConnectTimeout(5000);
-  http.setTimeout(5000);
-  const int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-  const String body = http.getString();
-  http.end();
-
-  const int key = body.indexOf("\"offset\"");
-  if (key < 0) {
-    return false;
-  }
-  int i = body.indexOf(':', key);
-  if (i < 0) {
-    return false;
-  }
-  ++i;
-  while (i < static_cast<int>(body.length()) && (body[i] == ' ' || body[i] == '\t')) {
-    ++i;
-  }
-  int sign = 1;
-  if (i < static_cast<int>(body.length()) && (body[i] == '-' || body[i] == '+')) {
-    if (body[i] == '-') {
-      sign = -1;
-    }
-    ++i;
-  }
-  long seconds = 0;
-  bool sawDigit = false;
-  while (i < static_cast<int>(body.length()) && body[i] >= '0' && body[i] <= '9') {
-    seconds = seconds * 10 + (body[i] - '0');
-    sawDigit = true;
-    ++i;
-  }
-  if (!sawDigit) {
-    return false;
-  }
-  outMinutes = static_cast<int>((sign * seconds) / 60);
-  return true;
-}
-
-void App::syncClockFromNetwork(uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("Clock", nowMs)) {
-    return;
-  }
-  const OtaUpdater::Config cfg = preferredOtaConfig();
-  if (cfg.wifiSsid.isEmpty()) {
-    display_.renderStatus("Clock", "No Wi-Fi set", "Configure Wi-Fi first");
-    delay(1500);
-    return;
-  }
-
-  display_.renderProgress("Clock", "Connecting Wi-Fi", cfg.wifiSsid, 10);
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
-  uint32_t startMs = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 8000) {
-    delay(100);
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.mode(WIFI_OFF);
-    display_.renderStatus("Clock", "Wi-Fi failed", "");
-    delay(1500);
-    return;
-  }
-
-  // Auto-detect the timezone from the network (best effort); falls back to the
-  // current/manual offset if the lookup fails.
-  display_.renderProgress("Clock", "Detecting timezone", "", 45);
-  int detectedMinutes = 0;
-  if (fetchTimezoneOffsetMinutes(detectedMinutes)) {
-    timezoneOffsetMinutes_ = detectedMinutes;
-    preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
-    Serial.printf("[clock] timezone auto-detected: %s\n", timezoneLabel().c_str());
-  }
-
-  display_.renderProgress("Clock", "Getting time", "", 60);
-  // RTC stores UTC; the offset above is applied on read.
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  struct tm timeInfo;
-  bool got = false;
-  startMs = millis();
-  while (millis() - startMs < 8000) {
-    if (getLocalTime(&timeInfo, 200)) {
-      got = true;
-      break;
-    }
-    delay(100);
-  }
-  WiFi.disconnect(true, false);
-  WiFi.mode(WIFI_OFF);
-
-  if (!got || timeInfo.tm_year < 120) {  // tm_year is years since 1900; <2020 = bad
-    display_.renderStatus("Clock", "Time sync failed", "");
-    delay(1500);
-    return;
-  }
-
-  BoardConfig::RtcDateTime rtc;
-  rtc.year = static_cast<uint16_t>(timeInfo.tm_year + 1900);
-  rtc.month = static_cast<uint8_t>(timeInfo.tm_mon + 1);
-  rtc.day = static_cast<uint8_t>(timeInfo.tm_mday);
-  rtc.hour = static_cast<uint8_t>(timeInfo.tm_hour);
-  rtc.minute = static_cast<uint8_t>(timeInfo.tm_min);
-  rtc.second = static_cast<uint8_t>(timeInfo.tm_sec);
-  rtc.valid = true;
-
-  if (!BoardConfig::rtcWrite(rtc)) {
-    display_.renderStatus("Clock", "RTC write failed", "");
-    delay(1500);
-    return;
-  }
-
-  updateStreakForToday();  // start the streak now that the clock is set
-
-  // Show the local time (RTC holds UTC; localNow applies the offset).
-  BoardConfig::RtcDateTime local;
-  int32_t day = 0;
-  char buf[24];
-  if (localNow(local, day)) {
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", local.year, local.month, local.day,
-                  local.hour, local.minute);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", rtc.year, rtc.month, rtc.day,
-                  rtc.hour, rtc.minute);
-  }
-  Serial.printf("[clock] RTC set (UTC) from NTP; local %s %s\n", buf, timezoneLabel().c_str());
-  display_.renderStatus("Clock set", buf, timezoneLabel());
-  delay(1500);
 }
 
 void App::renderChapterPicker() {

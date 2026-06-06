@@ -11,6 +11,7 @@
 #include "app/Localization.h"
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
+#include "app/ClockController.h"
 #include "app/TextEntryController.h"
 #include "display/StandbyScreensaver.h"
 #include "input/ButtonHandler.h"
@@ -313,11 +314,6 @@ class App {
   void saveLifetimeStats();
   // Reading streak (consecutive days), driven by the PCF85063 RTC.
   void updateStreakForToday();
-  void syncClockFromNetwork(uint32_t nowMs);  // NTP -> RTC over Wi-Fi
-  bool localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const;
-  bool fetchTimezoneOffsetMinutes(int &outMinutes);  // geo-IP lookup
-  void writeLocalToRtc(const BoardConfig::RtcDateTime &local);  // local -> UTC -> RTC
-  String timezoneLabel() const;
   // Settings > Clock submenu.
   void openClockSettings();
   void selectClockSettingsItem(uint32_t nowMs);
@@ -415,6 +411,7 @@ class App {
   CompanionSyncManager companionSync_;
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
+  ClockController clock_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
@@ -450,8 +447,6 @@ class App {
   // Reading streak: consecutive calendar days with reading (needs a valid RTC).
   uint32_t streakDays_ = 0;
   int32_t streakLastDay_ = 0;  // day-number of the last reading day (0 = none)
-  int timezoneOffsetMinutes_ = 0;  // RTC holds UTC; this offset is applied on read
-  BoardConfig::RtcDateTime clockEdit_;  // in-progress manual clock edit (local time)
   std::vector<String> readingStatsItems_;
   size_t readingStatsSelectedIndex_ = 0;
   size_t contextPreviewStartIndex_ = 0;
