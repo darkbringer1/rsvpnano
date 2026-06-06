@@ -220,7 +220,6 @@ constexpr size_t kFocusTimerGenreBackIndex = 0;
 constexpr size_t kFocusTimerGenreFirstIndex = 1;
 constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
-constexpr const char *kPrefLegacyWordIndex = "word";
 constexpr const char *kPrefWpm = "wpm";
 constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
@@ -253,7 +252,6 @@ constexpr const char *kPrefTypographyTracking = "type_trk";
 constexpr const char *kPrefTypographyAnchor = "type_anc";
 constexpr const char *kPrefTypographyGuideWidth = "type_wid";
 constexpr const char *kPrefTypographyGuideGap = "type_gap";
-constexpr const char *kPrefRecentSeq = "seq";
 constexpr const char *kPrefLifetimeWords = "lt_words";
 constexpr const char *kPrefLifetimeMs = "lt_ms";
 constexpr const char *kPrefLifetimeBooks = "lt_books";
@@ -293,7 +291,6 @@ constexpr const char *kPrefScrollWordSpacing = "psc_wspc";
 constexpr size_t kReaderFontSizeCount = 3;
 constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
 constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
-constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
 constexpr uint16_t kPacingDelayMinMs = 0;
 constexpr uint16_t kPacingDelayMaxMs = 600;
 constexpr uint16_t kPacingDelayStepMs = 50;
@@ -347,15 +344,6 @@ String displayNameForPath(const String &path) {
     name.remove(name.length() - 5);
   }
   return name;
-}
-
-uint32_t hashBookPath(const String &path) {
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < path.length(); ++i) {
-    hash ^= static_cast<uint8_t>(path[i]);
-    hash *= 16777619UL;
-  }
-  return hash;
 }
 
 int clampIntSetting(int value, int minValue, int maxValue) {
@@ -556,7 +544,8 @@ App::App()
           [this](uint32_t nowMs) { renderActiveReader(nowMs); }, [this]() { renderMenu(); },
           [this](const char *title, const char *line1, const char *line2, int percent) {
             renderStorageStatus(title, line1, line2, percent);
-          }) {}
+          }),
+      library_(preferences_, storage_) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
   const char *reset = "?";
@@ -4072,9 +4061,9 @@ void App::openBookPicker(bool articlesOnly) {
                      }
 
                      const uint32_t leftRecent =
-                         bookRecentSequence(storage_.bookPath(leftIndex));
+                         library_.recentSequence(storage_.bookPath(leftIndex));
                      const uint32_t rightRecent =
-                         bookRecentSequence(storage_.bookPath(rightIndex));
+                         library_.recentSequence(storage_.bookPath(rightIndex));
                      const bool leftHasRecent = leftRecent > 0;
                      const bool rightHasRecent = rightRecent > 0;
                      if (leftHasRecent != rightHasRecent) {
@@ -4425,7 +4414,7 @@ void App::enterUsbTransfer(uint32_t nowMs) {
     display_.renderStatus("USB", "SD not ready", "Returning");
     storageReady_ = storage_.begin();
     if (storageReady_ && usingStorageBook_ && !currentBookPath_.isEmpty()) {
-      const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+      const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
       if (refreshedBookIndex >= 0 &&
           loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
                           false)) {
@@ -4471,7 +4460,7 @@ void App::exitUsbTransfer(uint32_t nowMs) {
 
   storageReady_ = storage_.begin();
   if (storageReady_) {
-    const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+    const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
     if (refreshedBookIndex >= 0) {
       const size_t resumeIndex = reader_.currentIndex();
       if (loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
@@ -4797,7 +4786,7 @@ void App::wakeFromSleep() {
 
   if (storageReady_ && usingStorageBook_ && !currentBookPath_.isEmpty()) {
     const size_t resumeIndex = reader_.currentIndex();
-    const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+    const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
     if (refreshedBookIndex >= 0 &&
         loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
                         false)) {
@@ -4823,7 +4812,7 @@ bool App::restoreSavedBook(uint32_t nowMs) {
     return false;
   }
 
-  const int bookIndex = findBookIndexByPath(savedPath);
+  const int bookIndex = library_.findIndexByPath(savedPath);
   if (bookIndex < 0) {
     Serial.printf("[app] saved book not found: %s\n", savedPath.c_str());
     return false;
@@ -4848,7 +4837,7 @@ bool App::prepareBootBookLoad() {
 
   const String savedPath = preferences_.getString(kPrefBookPath, "");
   if (!savedPath.isEmpty()) {
-    const int savedBookIndex = findBookIndexByPath(savedPath);
+    const int savedBookIndex = library_.findIndexByPath(savedPath);
     if (savedBookIndex >= 0) {
       pendingBootBookIndex_ = static_cast<size_t>(savedBookIndex);
       pendingBootBookLegacyFallback_ = true;
@@ -4909,12 +4898,10 @@ void App::saveReadingPosition(bool force) {
   }
 
   preferences_.putString(kPrefBookPath, currentBookPath_);
-  preferences_.putUInt(bookPositionKey(currentBookPath_).c_str(), static_cast<uint32_t>(wordIndex));
-  preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
-                       static_cast<uint32_t>(reader_.wordCount()));
-  preferences_.putUInt(kPrefLegacyWordIndex, static_cast<uint32_t>(wordIndex));
+  library_.rememberPosition(currentBookPath_, static_cast<uint32_t>(wordIndex));
+  library_.rememberWordCount(currentBookPath_, static_cast<uint32_t>(reader_.wordCount()));
   preferences_.putUShort(kPrefWpm, reader_.wpm());
-  markBookRecent(currentBookPath_);
+  library_.markRecent(currentBookPath_);
   lastSavedWordIndex_ = wordIndex;
   Serial.printf("[app] saved position word=%u book=%s\n", static_cast<unsigned int>(wordIndex),
                 currentBookPath_.c_str());
@@ -4960,14 +4947,13 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   playingStartedMs_ = nowMs;
   usingStorageBook_ = true;
   preferences_.putString(kPrefBookPath, currentBookPath_);
-  preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
-                       static_cast<uint32_t>(reader_.wordCount()));
-  markBookRecent(currentBookPath_);
+  library_.rememberWordCount(currentBookPath_, static_cast<uint32_t>(reader_.wordCount()));
+  library_.markRecent(currentBookPath_);
 
   // Re-opening a finished book restarts it from the beginning (its saved
   // position is the last word, which would otherwise instantly re-finish).
-  if (bookIsFinished(currentBookPath_)) {
-    setBookFinished(currentBookPath_, false);
+  if (library_.isFinished(currentBookPath_)) {
+    library_.setFinished(currentBookPath_, false);
     reader_.seekTo(0);
     lastSavedWordIndex_ = reader_.currentIndex();
     saveReadingPosition(true);
@@ -4975,14 +4961,14 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
                   currentBookPath_.c_str());
   } else {
     const uint32_t savedWordIndex =
-        savedWordIndexForBook(currentBookPath_, allowLegacyPositionFallback);
-    if (savedWordIndex != kNoSavedWordIndex) {
+        library_.savedWordIndex(currentBookPath_, allowLegacyPositionFallback);
+    if (savedWordIndex != BookLibraryStore::kNoSavedWordIndex) {
       renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Restoring position", 78);
       reader_.seekTo(savedWordIndex);
       lastSavedWordIndex_ = reader_.currentIndex();
-      Serial.printf("[app] restored book position word=%u key=%s\n",
+      Serial.printf("[app] restored book position word=%u book=%s\n",
                     static_cast<unsigned int>(reader_.currentIndex()),
-                    bookPositionKey(currentBookPath_).c_str());
+                    currentBookPath_.c_str());
     }
   }
 
@@ -5003,124 +4989,18 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   return true;
 }
 
-String App::bookPositionKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "p%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookWordCountKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "c%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookRecentKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "r%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookFinishedKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "f%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-void App::setBookFinished(const String &bookPath, bool finished) {
-  if (bookPath.isEmpty()) {
-    return;
-  }
-  const String key = bookFinishedKey(bookPath);
-  if (finished) {
-    preferences_.putBool(key.c_str(), true);
-  } else if (preferences_.isKey(key.c_str())) {
-    preferences_.remove(key.c_str());
-  }
-}
-
-bool App::bookIsFinished(const String &bookPath) {
-  if (bookPath.isEmpty()) {
-    return false;
-  }
-  return preferences_.getBool(bookFinishedKey(bookPath).c_str(), false);
-}
-
-uint32_t App::nextRecentSequence() {
-  uint32_t sequence = preferences_.getUInt(kPrefRecentSeq, 0);
-  if (sequence == 0xFFFFFFFEUL) {
-    sequence = 0;
-  }
-  ++sequence;
-  preferences_.putUInt(kPrefRecentSeq, sequence);
-  return sequence;
-}
-
-uint32_t App::bookRecentSequence(const String &bookPath) {
-  return preferences_.getUInt(bookRecentKey(bookPath).c_str(), 0);
-}
-
-void App::markBookRecent(const String &bookPath) {
-  if (bookPath.isEmpty()) {
-    return;
-  }
-
-  preferences_.putUInt(bookRecentKey(bookPath).c_str(), nextRecentSequence());
-}
-
-uint32_t App::savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback) {
-  const String key = bookPositionKey(bookPath);
-  if (preferences_.isKey(key.c_str())) {
-    return preferences_.getUInt(key.c_str(), 0);
-  }
-
-  if (allowLegacyFallback && preferences_.isKey(kPrefLegacyWordIndex)) {
-    const uint32_t legacyWordIndex = preferences_.getUInt(kPrefLegacyWordIndex, 0);
-    preferences_.putUInt(key.c_str(), legacyWordIndex);
-    Serial.printf("[app] migrated legacy position word=%u to key=%s\n",
-                  static_cast<unsigned int>(legacyWordIndex), key.c_str());
-    return legacyWordIndex;
-  }
-
-  return kNoSavedWordIndex;
-}
-
 bool App::bookProgressPercent(size_t bookIndex, uint8_t &percent) {
-  size_t wordIndex = 0;
-  size_t wordCount = 0;
-
   if (usingStorageBook_ && bookIndex == currentBookIndex_) {
-    wordIndex = reader_.currentIndex();
-    wordCount = reader_.wordCount();
-  } else {
-    const String path = storage_.bookPath(bookIndex);
-    const String positionKey = bookPositionKey(path);
-    const String countKey = bookWordCountKey(path);
-    if (!preferences_.isKey(positionKey.c_str()) || !preferences_.isKey(countKey.c_str())) {
+    const size_t wordCount = reader_.wordCount();
+    if (wordCount <= 1) {
       return false;
     }
-
-    wordIndex = preferences_.getUInt(positionKey.c_str(), 0);
-    wordCount = preferences_.getUInt(countKey.c_str(), 0);
+    const size_t wordIndex = std::min(reader_.currentIndex(), wordCount - 1);
+    const size_t progress = (wordIndex * static_cast<size_t>(100)) / (wordCount - 1);
+    percent = static_cast<uint8_t>(std::min(static_cast<size_t>(100), progress));
+    return true;
   }
-
-  if (wordCount <= 1) {
-    return false;
-  }
-
-  wordIndex = std::min(wordIndex, wordCount - 1);
-  const size_t progress = (wordIndex * static_cast<size_t>(100)) / (wordCount - 1);
-  percent = static_cast<uint8_t>(std::min(static_cast<size_t>(100), progress));
-  return true;
-}
-
-int App::findBookIndexByPath(const String &path) const {
-  for (size_t i = 0; i < storage_.bookCount(); ++i) {
-    if (storage_.bookPath(i) == path) {
-      return static_cast<int>(i);
-    }
-  }
-  return -1;
+  return library_.savedProgressPercent(storage_.bookPath(bookIndex), percent);
 }
 
 void App::renderMenu() {
@@ -5239,7 +5119,7 @@ void App::renderBookPicker() {
 void App::enterBookFinished(uint32_t nowMs) {
   // Persist the final position and the read flag before showing the summary.
   saveReadingPosition(true);
-  setBookFinished(currentBookPath_, true);
+  library_.setFinished(currentBookPath_, true);
   ++lifetimeBooksFinished_;
   lifetimeStatsDirty_ = true;
   saveLifetimeStats();
@@ -5650,7 +5530,7 @@ DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
 
   uint8_t percent = 0;
   const bool hasProgress = bookProgressPercent(bookIndex, percent);
-  if (bookIsFinished(storage_.bookPath(bookIndex))) {
+  if (library_.isFinished(storage_.bookPath(bookIndex))) {
     if (!item.subtitle.isEmpty()) {
       item.subtitle += " - ";
     }
@@ -6018,7 +5898,8 @@ DisplayManager::TypographyConfig App::effectiveTypographyConfig() const {
 }
 
 uint32_t App::currentReaderContentToken() const {
-  return hashBookPath(currentBookPath_.isEmpty() ? String("__demo__") : currentBookPath_);
+  return BookLibraryStore::hashBookPath(currentBookPath_.isEmpty() ? String("__demo__")
+                                                                       : currentBookPath_);
 }
 
 size_t App::phantomBeforeCharTarget() const {

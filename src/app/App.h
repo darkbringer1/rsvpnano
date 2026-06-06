@@ -13,6 +13,7 @@
 #include "display/DisplayManager.h"
 #include "app/ClockController.h"
 #include "app/OtaController.h"
+#include "book/BookLibraryStore.h"
 #include "app/TextEntryController.h"
 #include "display/StandbyScreensaver.h"
 #include "reader/TimeEstimateEngine.h"
@@ -265,20 +266,9 @@ class App {
   bool loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback = false,
                        bool allowIndexBuild = true, bool allowEpubConversion = true,
                        bool rebuildTimeEstimate = true);
-  String bookPositionKey(const String &bookPath) const;
-  String bookWordCountKey(const String &bookPath) const;
-  String bookRecentKey(const String &bookPath) const;
-  String bookFinishedKey(const String &bookPath) const;
-  uint32_t nextRecentSequence();
-  uint32_t bookRecentSequence(const String &bookPath);
-  void markBookRecent(const String &bookPath);
-  void setBookFinished(const String &bookPath, bool finished);
-  bool bookIsFinished(const String &bookPath);
   void enterBookFinished(uint32_t nowMs);
   void renderBookFinished();
-  uint32_t savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback = false);
   bool bookProgressPercent(size_t bookIndex, uint8_t &percent);
-  int findBookIndexByPath(const String &path) const;
   void renderMenu();
   void renderMainMenu();
   void renderSettings();
@@ -383,6 +373,7 @@ class App {
   ClockController clock_;
   OtaController ota_;
   TimeEstimateEngine timeEstimate_;
+  BookLibraryStore library_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
