@@ -19,10 +19,15 @@ FLASH_ARGS += -v $(VERSION)
 VERSION_ENV := RSVP_FIRMWARE_VERSION=$(VERSION)
 endif
 
-.PHONY: help build build-amoled build-bar test flash flash-monitor rsvp monitor ports clean export-web release-check flash-bringup merge-bringup
+.PHONY: help menu build build-amoled build-bar test flash flash-monitor rsvp monitor ports clean export-web release-check flash-bringup merge-bringup
+
+menu:
+	@./dev.sh
 
 help:
 	@printf "RSVP Nano helper targets\n"
+	@printf "\n"
+	@printf "  make menu               Interactive dev console (build/flash/monitor/test)\n"
 	@printf "\n"
 	@printf "Common:\n"
 	@printf "  make build              Build ENV=%s (default: amoled)\n" "$(ENV)"

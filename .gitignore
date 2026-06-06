@@ -20,3 +20,5 @@ tools/*.rsvp
 web/firmware/*.bin
 .cache/
 compile_commands.json
+# dev.sh local prefs (port/env/version)
+.dev.local
