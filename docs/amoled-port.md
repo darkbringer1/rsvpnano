@@ -93,6 +93,13 @@ for the AMOLED build instead:
 The existing screensaver visuals (Life, maze, Voronoi, screen-off) are reused
 unchanged.
 
+The touch driver **self-heals** across the screen-off transition. Sleeping the
+panel can disturb the shared touch I2C bus (FT3168 + XCA9554 expander), which
+used to make `TouchHandler::poll` disable itself after a burst of read failures
+and stay dead until reboot — so wake-on-touch deadlocked. On repeated failures
+it now restarts the bus and re-probes the controller, then keeps polling
+(`reinitialize` in `src/input/TouchHandler.cpp`).
+
 ---
 
 ## USB transfer (SD-over-USB)
@@ -158,7 +165,7 @@ fork for OTA to pick them up.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Reader (RSVP, hold-to-read, WPM, scrub) | ✅ Working | |
-| Touch (FT3168) | ✅ Working | |
+| Touch (FT3168) | ✅ Working | Self-heals after screen-off; no longer dies until reboot |
 | Menu (BOOT button) + double-tap select | ✅ Working | |
 | Brightness (BOOT long-press) | ✅ Working | |
 | Focus Timer + IMU (tap/hold/flip) | ✅ Working | |
@@ -180,3 +187,4 @@ fork for OTA to pick them up.
 - `docs/ota.conf.example` — documents the lock.
 - `src/board/BoardConfig.cpp` — AXP2101 read-only battery path.
 - `src/app/App.{h,cpp}` — double-tap menu select; idle auto-standby + wake.
+- `src/input/TouchHandler.{h,cpp}` — touch self-heal (bus restart + re-probe) instead of permanent disable after read failures.
