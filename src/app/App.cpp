@@ -23,7 +23,6 @@
 #endif
 
 static const char *kAppTag = "app";
-constexpr uint32_t kOtaCheckTaskStackBytes = 10240;
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
 constexpr uint32_t kBrightnessToastMs = 1500;
@@ -409,18 +408,6 @@ String storedOrFallbackLabel(const String &value, const String &fallback) {
   return value.isEmpty() ? fallback : value;
 }
 
-void copyOtaLabel(char *destination, size_t destinationSize, const String &source) {
-  if (destination == nullptr || destinationSize == 0) {
-    return;
-  }
-
-  const size_t copyLength = std::min(destinationSize - 1, source.length());
-  for (size_t i = 0; i < copyLength; ++i) {
-    destination[i] = source[i];
-  }
-  destination[copyLength] = '\0';
-}
-
 bool sdCardFolderRepairNeeded(const StorageManager::DiagnosticResult &result) {
   return result.mounted &&
          (!result.booksDirectory || !result.bookFilesDirectory ||
@@ -535,9 +522,7 @@ App::App()
           }),
       clock_(
           display_, preferences_,
-          [this](const char *label, uint32_t nowMs) {
-            return blockNetworkActionForOtaCheck(label, nowMs);
-          },
+          [this](const char *label, uint32_t nowMs) { return ota_.blockForCheck(label, nowMs); },
           [this](String &ssid, String &password) {
             const OtaUpdater::Config cfg = preferredOtaConfig();
             if (cfg.wifiSsid.isEmpty()) {
@@ -547,7 +532,28 @@ App::App()
             password = cfg.wifiPassword;
             return true;
           },
-          [this]() { updateStreakForToday(); }) {}
+          [this]() { updateStreakForToday(); }),
+      ota_(
+          display_, [this]() { renderMenu(); }, [this]() { saveReadingPosition(true); },
+          [this]() { applyStateCpuFrequency(); },
+          [this](uint32_t nowMs) {
+            if (state_ == AppState::Menu &&
+                (menuScreen_ == MenuScreen::SettingsHome ||
+                 menuScreen_ == MenuScreen::SettingsDisplay ||
+                 menuScreen_ == MenuScreen::SettingsPacing ||
+                 menuScreen_ == MenuScreen::SettingsBattery ||
+                 menuScreen_ == MenuScreen::SettingsClock ||
+                 menuScreen_ == MenuScreen::WifiSettings)) {
+              rebuildSettingsMenuItems();
+              renderSettings();
+            } else {
+              menuScreen_ = MenuScreen::Main;
+              setState(AppState::Paused, nowMs);
+            }
+          },
+          [this](const char *title, const char *line1, const char *line2, int percent) {
+            renderStorageStatus(title, line1, line2, percent);
+          }) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
   const char *reset = "?";
@@ -729,7 +735,7 @@ void App::begin() {
   lastStateLogMs_ = bootStartedMs_;
   lastUserActivityMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
-  Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
+  Serial.printf("[app] version=%s\n", ota_.currentVersion().c_str());
 
   logApp("Initializing hardware modules");
   const bool displayReady = display_.begin();
@@ -895,7 +901,7 @@ void App::update(uint32_t nowMs) {
     return;
   }
 
-  pollOtaCheckResult(nowMs);
+  ota_.pollResult(nowMs);
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
@@ -1064,7 +1070,7 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
 void App::applyStateCpuFrequency() {
   // While a background OTA check is running we need the full clock for Wi-Fi/TLS.
-  if (otaCheckInProgress_) {
+  if (ota_.checkInProgress()) {
     if (getCpuFrequencyMhz() != 240) {
       setCpuFrequencyMhz(240);
       Serial.println("[power] CPU -> 240 MHz (OTA active)");
@@ -3117,7 +3123,7 @@ void App::selectSettingsItem(uint32_t nowMs) {
         openWifiSettings();
         return;
       case kSettingsHomeUpdateIndex: {
-        runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
+        ota_.runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
         return;
       }
       case kSettingsHomeBatteryIndex:
@@ -3475,7 +3481,7 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
 }
 
 void App::scanWifiNetworks() {
-  if (blockNetworkActionForOtaCheck("Wi-Fi", millis())) {
+  if (ota_.blockForCheck("Wi-Fi", millis())) {
     return;
   }
 
@@ -3715,7 +3721,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Battery");
     settingsMenuItems_.push_back("Clock");
     settingsMenuItems_.push_back(firmwareUpdateMenuLabel());
-    settingsMenuItems_.push_back("Installed: " + firmwareVersionLabel());
+    settingsMenuItems_.push_back("Installed: " + ota_.firmwareVersionLabel());
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Display mode: " + themeModeLabel());
@@ -3833,7 +3839,7 @@ void App::flushPendingTimeEstimateRebuild() {
 
 OtaUpdater::Config App::preferredOtaConfig() {
   OtaUpdater::Config otaConfig;
-  otaUpdater_.loadConfig(otaConfig);
+  ota_.loadConfig(otaConfig);
 
   if (preferences_.isKey(kPrefWifiSsid)) {
     otaConfig.wifiSsid = preferences_.getString(kPrefWifiSsid, "");
@@ -3852,7 +3858,7 @@ String App::configuredWifiSsid() {
   String ssid = preferences_.getString(kPrefWifiSsid, "");
   if (ssid.isEmpty()) {
     OtaUpdater::Config otaConfig;
-    otaUpdater_.loadConfig(otaConfig);
+    ota_.loadConfig(otaConfig);
     ssid = otaConfig.wifiSsid;
   }
   ssid.trim();
@@ -3865,109 +3871,23 @@ bool App::otaAutoCheckEnabled() {
   }
 
   OtaUpdater::Config otaConfig;
-  otaUpdater_.loadConfig(otaConfig);
+  ota_.loadConfig(otaConfig);
   return otaConfig.autoCheck;
 }
 
 void App::maybeAutoCheckForUpdates(uint32_t nowMs) {
   (void)nowMs;
   OtaUpdater::Config otaConfig = preferredOtaConfig();
-  if (!otaConfig.autoCheck || !otaUpdater_.isConfigured(otaConfig)) {
+  if (!otaConfig.autoCheck || !ota_.isConfigured(otaConfig)) {
     return;
   }
 
   Serial.println("[ota] auto-check enabled");
-  startBackgroundOtaCheck(otaConfig);
-}
-
-bool App::startBackgroundOtaCheck(const OtaUpdater::Config &config) {
-  if (otaCheckInProgress_) {
-    Serial.println("[ota] background check already running");
-    return false;
-  }
-
-  if (otaCheckQueue_ == nullptr) {
-    otaCheckQueue_ = xQueueCreate(1, sizeof(OtaCheckResult));
-    if (otaCheckQueue_ == nullptr) {
-      Serial.println("[ota] could not create result queue");
-      return false;
-    }
-  }
-  xQueueReset(otaCheckQueue_);
-
-  OtaCheckTaskParams *params = new OtaCheckTaskParams();
-  if (params == nullptr) {
-    Serial.println("[ota] could not allocate task params");
-    return false;
-  }
-  params->config = config;
-  params->resultQueue = otaCheckQueue_;
-
-  otaCheckInProgress_ = true;
-  BaseType_t created = xTaskCreatePinnedToCore(otaCheckTask, "ota_check",
-                                               kOtaCheckTaskStackBytes, params, 1, nullptr, 0);
-  if (created != pdPASS) {
-    Serial.printf("[ota] background task create failed: %ld\n", static_cast<long>(created));
-    otaCheckInProgress_ = false;
-    delete params;
-    return false;
-  }
-
-  Serial.println("[ota] background check started");
-  return true;
-}
-
-void App::otaCheckTask(void *params) {
-  OtaCheckTaskParams *taskParams = static_cast<OtaCheckTaskParams *>(params);
-  if (taskParams == nullptr) {
-    vTaskDelete(nullptr);
-    return;
-  }
-
-  OtaCheckResult queuedResult;
-
-  const OtaUpdater::Result result =
-      OtaUpdater().checkOnly(taskParams->config, nullptr, nullptr);
-  queuedResult.code = result.code;
-  copyOtaLabel(queuedResult.currentVersion, sizeof(queuedResult.currentVersion),
-               result.currentVersion);
-  copyOtaLabel(queuedResult.latestVersion, sizeof(queuedResult.latestVersion),
-               result.latestVersion);
-  copyOtaLabel(queuedResult.summary, sizeof(queuedResult.summary), result.summary);
-  copyOtaLabel(queuedResult.detail, sizeof(queuedResult.detail), result.detail);
-
-  if (taskParams->resultQueue != nullptr) {
-    xQueueOverwrite(taskParams->resultQueue, &queuedResult);
-  }
-
-  delete taskParams;
-  vTaskDelete(nullptr);
-}
-
-void App::pollOtaCheckResult(uint32_t nowMs) {
-  (void)nowMs;
-  if (otaCheckQueue_ == nullptr) {
-    return;
-  }
-
-  OtaCheckResult result;
-  while (xQueueReceive(otaCheckQueue_, &result, 0) == pdTRUE) {
-    otaCheckInProgress_ = false;
-    applyStateCpuFrequency();
-    Serial.printf("[ota] background result code=%u current=%s latest=%s summary=%s detail=%s\n",
-                  static_cast<unsigned int>(result.code), result.currentVersion,
-                  result.latestVersion, result.summary, result.detail);
-
-    if (result.code == OtaUpdater::ResultCode::UpdateAvailable) {
-      pendingUpdateCurrentVersion_ = String(result.currentVersion);
-      pendingUpdateNewVersion_ = String(result.latestVersion);
-      otaUpdatePromptPending_ = true;
-    }
-  }
+  ota_.startBackgroundCheck(otaConfig);
 }
 
 bool App::updateConfirmCanOpen() const {
-  return otaUpdatePromptPending_ && !pendingBootBookLoad_ && state_ == AppState::Paused;
+  return ota_.updatePromptPending() && !pendingBootBookLoad_ && state_ == AppState::Paused;
 }
 
 void App::maybeOpenUpdateConfirm(uint32_t nowMs) {
@@ -3975,89 +3895,14 @@ void App::maybeOpenUpdateConfirm(uint32_t nowMs) {
     return;
   }
 
-  otaUpdatePromptPending_ = false;
+  ota_.clearUpdatePrompt();
   setState(AppState::Menu, nowMs);
   openUpdateConfirm();
 }
 
-bool App::blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs) {
-  pollOtaCheckResult(nowMs);
-  if (!otaCheckInProgress_) {
-    return false;
-  }
-
-  display_.renderStatus(title, "OTA check running", "Try again soon");
-  delay(1200);
-  renderMenu();
-  return true;
-}
-
-void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("OTA", nowMs)) {
-    return;
-  }
-
-  if (!automatic) {
-    otaUpdatePromptPending_ = false;
-  }
-
-  if (!otaUpdater_.isConfigured(config)) {
-    if (!automatic) {
-      display_.renderStatus("OTA", "Wi-Fi not set", "Settings -> Wi-Fi");
-      delay(1600);
-      if (state_ == AppState::Menu &&
-          (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-           menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
-           menuScreen_ == MenuScreen::WifiSettings)) {
-        rebuildSettingsMenuItems();
-        renderSettings();
-      } else {
-        menuScreen_ = MenuScreen::Main;
-        setState(AppState::Paused, nowMs);
-      }
-    }
-    return;
-  }
-
-  saveReadingPosition(true);
-  const OtaUpdater::Result result =
-      otaUpdater_.checkAndInstall(config, &App::handleStorageStatus, this);
-
-  Serial.printf("[ota] code=%u current=%s latest=%s summary=%s detail=%s\n",
-                static_cast<unsigned int>(result.code), result.currentVersion.c_str(),
-                result.latestVersion.c_str(), result.summary.c_str(), result.detail.c_str());
-
-  if (result.rebootRequired) {
-    display_.renderStatus("OTA", "Restarting", result.latestVersion);
-    delay(300);
-    ESP.restart();
-    return;
-  }
-
-  if (automatic) {
-    return;
-  }
-
-  const String line2 = result.detail.isEmpty() ? result.currentVersion : result.detail;
-  display_.renderStatus("OTA", result.summary, line2);
-  delay(1600);
-  if (state_ == AppState::Menu &&
-      (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
-       menuScreen_ == MenuScreen::WifiSettings)) {
-    rebuildSettingsMenuItems();
-    renderSettings();
-  } else {
-    menuScreen_ = MenuScreen::Main;
-    setState(AppState::Paused, nowMs);
-  }
-}
-
 void App::runRssFeedCheck(uint32_t nowMs) {
   (void)nowMs;
-  if (blockNetworkActionForOtaCheck("RSS", nowMs)) {
+  if (ota_.blockForCheck("RSS", nowMs)) {
     return;
   }
 
@@ -4082,14 +3927,6 @@ void App::runRssFeedCheck(uint32_t nowMs) {
 String App::pacingDelayLabel(uint16_t delayMs) const { return String(delayMs) + " ms"; }
 
 String App::firmwareUpdateMenuLabel() const { return "Firmware update"; }
-
-String App::firmwareVersionLabel() const {
-#ifdef RSVP_FIRMWARE_VERSION
-  return String(RSVP_FIRMWARE_VERSION);
-#else
-  return "dev";
-#endif
-}
 
 String App::uiText(UiText key) const { return Localization::text(uiLanguage_, key); }
 
@@ -4425,7 +4262,7 @@ void App::selectUpdateConfirmItem(uint32_t nowMs) {
   }
 
   Serial.println("[ota] update confirmed by user");
-  runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
+  ota_.runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
 }
 
 void App::openPowerOffConfirm(uint32_t nowMs) {
@@ -4468,7 +4305,7 @@ void App::renderPowerOffConfirm() {
 }
 
 void App::enterCompanionSync(uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("Sync", nowMs)) {
+  if (ota_.blockForCheck("Sync", nowMs)) {
     return;
   }
 
@@ -5681,7 +5518,7 @@ void App::renderUpdateConfirm() {
   std::vector<String> items;
   items.reserve(UpdateConfirmItemCount + kUpdateConfirmHeaderRows);
   items.push_back("Update available");
-  items.push_back(pendingUpdateCurrentVersion_ + " -> " + pendingUpdateNewVersion_);
+  items.push_back(ota_.pendingCurrentVersion() + " -> " + ota_.pendingNewVersion());
   items.push_back("Skip for now");
   items.push_back("Update");
 

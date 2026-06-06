@@ -12,6 +12,7 @@
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
 #include "app/ClockController.h"
+#include "app/OtaController.h"
 #include "app/TextEntryController.h"
 #include "display/StandbyScreensaver.h"
 #include "input/ButtonHandler.h"
@@ -45,23 +46,6 @@ class App {
   void setBootReason(int resetReason, int wakeCause);
 
  private:
-  static constexpr size_t kOtaVersionLabelMax = 32;
-  static constexpr size_t kOtaSummaryLabelMax = 40;
-  static constexpr size_t kOtaDetailLabelMax = 96;
-
-  struct OtaCheckResult {
-    OtaUpdater::ResultCode code = OtaUpdater::ResultCode::MetadataFailed;
-    char currentVersion[kOtaVersionLabelMax] = {};
-    char latestVersion[kOtaVersionLabelMax] = {};
-    char summary[kOtaSummaryLabelMax] = {};
-    char detail[kOtaDetailLabelMax] = {};
-  };
-
-  struct OtaCheckTaskParams {
-    OtaUpdater::Config config;
-    QueueHandle_t resultQueue = nullptr;
-  };
-
   struct PausedTouchSession {
     bool active = false;
     uint16_t startX = 0;
@@ -214,13 +198,8 @@ class App {
   void rebuildSettingsMenuItems();
   void applyPacingSettings();
   void maybeAutoCheckForUpdates(uint32_t nowMs);
-  bool startBackgroundOtaCheck(const OtaUpdater::Config &config);
-  static void otaCheckTask(void *params);
-  void pollOtaCheckResult(uint32_t nowMs);
   void maybeOpenUpdateConfirm(uint32_t nowMs);
   bool updateConfirmCanOpen() const;
-  bool blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs);
-  void runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs);
   void runRssFeedCheck(uint32_t nowMs);
   OtaUpdater::Config preferredOtaConfig();
   void scanWifiNetworks();
@@ -232,7 +211,6 @@ class App {
   bool otaAutoCheckEnabled();
   String pacingDelayLabel(uint16_t delayMs) const;
   String firmwareUpdateMenuLabel() const;
-  String firmwareVersionLabel() const;
   String themeModeLabel() const;
   String phantomWordsLabel() const;
   String focusHighlightLabel() const;
@@ -406,12 +384,12 @@ class App {
   TextEntryController textEntry_;
   StorageManager storage_;
   IndexedBookStore activeBookStore_;
-  OtaUpdater otaUpdater_;
   RssFeedManager rssFeedManager_;
   CompanionSyncManager companionSync_;
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
   ClockController clock_;
+  OtaController ota_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
@@ -475,7 +453,6 @@ class App {
   MenuScreen textEntryReturnScreen_ = MenuScreen::Main;
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
   MenuScreen powerOffConfirmReturnScreen_ = MenuScreen::Main;
-  QueueHandle_t otaCheckQueue_ = nullptr;
   std::vector<String> settingsMenuItems_;
   std::vector<String> focusTimerGenreMenuItems_;
   std::vector<DisplayManager::LibraryItem> wifiNetworkMenuItems_;
@@ -501,8 +478,6 @@ class App {
   String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash
   String currentBookPath_;
   String currentBookTitle_;
-  String pendingUpdateCurrentVersion_;
-  String pendingUpdateNewVersion_;
   String batteryLabel_;
   float batteryFilteredVoltage_ = 0.0f;
   float batteryFilteredPercent_ = 0.0f;
@@ -532,8 +507,6 @@ class App {
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
-  bool otaCheckInProgress_ = false;
-  bool otaUpdatePromptPending_ = false;
   bool contextViewVisible_ = false;
   bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;
