@@ -343,9 +343,14 @@ class App {
   String bookPositionKey(const String &bookPath) const;
   String bookWordCountKey(const String &bookPath) const;
   String bookRecentKey(const String &bookPath) const;
+  String bookFinishedKey(const String &bookPath) const;
   uint32_t nextRecentSequence();
   uint32_t bookRecentSequence(const String &bookPath);
   void markBookRecent(const String &bookPath);
+  void setBookFinished(const String &bookPath, bool finished);
+  bool bookIsFinished(const String &bookPath);
+  void enterBookFinished(uint32_t nowMs);
+  void renderBookFinished();
   uint32_t savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback = false);
   bool bookProgressPercent(size_t bookIndex, uint8_t &percent);
   int findBookIndexByPath(const String &path) const;
@@ -471,6 +476,10 @@ class App {
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
   size_t lastSavedWordIndex_ = static_cast<size_t>(-1);
+  // Per-book reading-session stats, reset on book load, used by the completion screen.
+  uint32_t readingSessionMs_ = 0;
+  uint32_t playingStartedMs_ = 0;
+  size_t wordsReadThisSession_ = 0;
   size_t contextPreviewStartIndex_ = 0;
   size_t contextPreviewCurrentLocalIndex_ = static_cast<size_t>(-1);
   size_t currentBookIndex_ = 0;

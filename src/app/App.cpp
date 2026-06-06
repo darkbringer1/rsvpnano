@@ -950,6 +950,8 @@ const char *App::stateName(AppState state) const {
       return "Paused";
     case AppState::Playing:
       return "Playing";
+    case AppState::Finished:
+      return "Finished";
     case AppState::Menu:
       return "Menu";
     case AppState::CompanionSync:
@@ -986,6 +988,14 @@ void App::setState(AppState nextState, uint32_t nowMs) {
     flushPendingTimeEstimateRebuild();
   }
 
+  // Accumulate active reading time for the completion-screen stats.
+  if (previousState == AppState::Playing && nowMs >= playingStartedMs_) {
+    readingSessionMs_ += nowMs - playingStartedMs_;
+  }
+  if (nextState == AppState::Playing) {
+    playingStartedMs_ = nowMs;
+  }
+
   if (nextState != AppState::Paused) {
     pausedTouch_.active = false;
     pausedTouchIntent_ = TouchIntent::None;
@@ -1019,6 +1029,9 @@ void App::setState(AppState nextState, uint32_t nowMs) {
     case AppState::Playing:
       reader_.start(nowMs);
       renderActiveReader(nowMs);
+      break;
+    case AppState::Finished:
+      renderBookFinished();
       break;
     case AppState::Menu:
       renderMenu();
@@ -1071,6 +1084,7 @@ void App::applyStateCpuFrequency() {
       // In scroll mode, Paused is the active reading state (manual swipe scrolling).
       mhz = scrollModeEnabled() ? cpuMhzScroll_ : cpuMhzPaused_;
       break;
+    case AppState::Finished:
     case AppState::Menu:
       mhz = cpuMhzMenu_;
       break;
@@ -1111,8 +1125,10 @@ void App::updateState(uint32_t nowMs) {
     return;
   }
 
-  if (state_ == AppState::Menu || state_ == AppState::Standby || state_ == AppState::Sleeping) {
-    // Menu, standby, and sleeping state changes are driven by direct input and power events.
+  if (state_ == AppState::Finished || state_ == AppState::Menu ||
+      state_ == AppState::Standby || state_ == AppState::Sleeping) {
+    // Finished, menu, standby, and sleeping state changes are driven by direct
+    // input and power events, not the play/pause auto-transition below.
     return;
   }
 
@@ -1147,9 +1163,23 @@ void App::updateReader(uint32_t nowMs) {
   if (!ensureCurrentBookWordAvailable(nowMs)) {
     return;
   }
+  if (changed && reader_.currentIndex() > previousIndex) {
+    wordsReadThisSession_ += reader_.currentIndex() - previousIndex;
+  }
   if (changed && maybeStartChapterTransition(previousIndex, reader_.currentIndex(), nowMs)) {
     return;
   }
+
+  // Real (storage) books stop at the last word; the demo loops by design.
+  // Once the final word has been shown for its full duration, finish the book.
+  if (usingStorageBook_ && reader_.atEnd()) {
+    const uint32_t durationMs = reader_.currentWordDurationMs();
+    if (durationMs == 0 || reader_.elapsedInCurrentWordMs(nowMs) >= durationMs) {
+      enterBookFinished(nowMs);
+      return;
+    }
+  }
+
   if (scrollModeEnabled()) {
     if (changed || nowMs - lastScrollAnimationRenderMs_ >= kScrollAnimationFrameMs) {
       renderScrollReader(nowMs);
@@ -2234,6 +2264,15 @@ void App::handleTouch(uint32_t nowMs) {
   Serial.printf("[touch] phase=%s touched=%u x=%u y=%u gesture=%u state=%s\n",
                 touchPhaseName(ev.phase), ev.touched ? 1 : 0, ev.x, ev.y, ev.gesture,
                 stateName(state_));
+  if (state_ == AppState::Finished) {
+    // Completion screen: any tap dismisses to the library/book picker.
+    if (ev.phase == TouchPhase::End) {
+      setState(AppState::Menu, nowMs);
+      openBookPicker(false);
+    }
+    return;
+  }
+
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::FocusTimerSession) {
       applyFocusTimerTouch(ev, nowMs);
@@ -4820,7 +4859,8 @@ void App::noteActivity(uint32_t nowMs) {
 void App::updateIdleStandby(uint32_t nowMs) {
   // Only the resting states accrue idle time. Reading (Playing) holds activity
   // alive via continuous touch; utility/sync/boot screens manage their own life.
-  if (state_ != AppState::Paused && state_ != AppState::Menu) {
+  if (state_ != AppState::Paused && state_ != AppState::Menu &&
+      state_ != AppState::Finished) {
     lastActivityMs_ = nowMs;
     return;
   }
@@ -5509,21 +5549,35 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   currentBookPath_ = loadedPath;
   currentBookTitle_ = loadedTitle;
   lastSavedWordIndex_ = static_cast<size_t>(-1);
+  readingSessionMs_ = 0;
+  wordsReadThisSession_ = 0;
+  playingStartedMs_ = nowMs;
   usingStorageBook_ = true;
   preferences_.putString(kPrefBookPath, currentBookPath_);
   preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
                        static_cast<uint32_t>(reader_.wordCount()));
   markBookRecent(currentBookPath_);
 
-  const uint32_t savedWordIndex =
-      savedWordIndexForBook(currentBookPath_, allowLegacyPositionFallback);
-  if (savedWordIndex != kNoSavedWordIndex) {
-    renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Restoring position", 78);
-    reader_.seekTo(savedWordIndex);
+  // Re-opening a finished book restarts it from the beginning (its saved
+  // position is the last word, which would otherwise instantly re-finish).
+  if (bookIsFinished(currentBookPath_)) {
+    setBookFinished(currentBookPath_, false);
+    reader_.seekTo(0);
     lastSavedWordIndex_ = reader_.currentIndex();
-    Serial.printf("[app] restored book position word=%u key=%s\n",
-                  static_cast<unsigned int>(reader_.currentIndex()),
-                  bookPositionKey(currentBookPath_).c_str());
+    saveReadingPosition(true);
+    Serial.printf("[app] reopened finished book, restarting from start: %s\n",
+                  currentBookPath_.c_str());
+  } else {
+    const uint32_t savedWordIndex =
+        savedWordIndexForBook(currentBookPath_, allowLegacyPositionFallback);
+    if (savedWordIndex != kNoSavedWordIndex) {
+      renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Restoring position", 78);
+      reader_.seekTo(savedWordIndex);
+      lastSavedWordIndex_ = reader_.currentIndex();
+      Serial.printf("[app] restored book position word=%u key=%s\n",
+                    static_cast<unsigned int>(reader_.currentIndex()),
+                    bookPositionKey(currentBookPath_).c_str());
+    }
   }
 
   if (rebuildTimeEstimate) {
@@ -5559,6 +5613,31 @@ String App::bookRecentKey(const String &bookPath) const {
   char key[10];
   std::snprintf(key, sizeof(key), "r%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
   return String(key);
+}
+
+String App::bookFinishedKey(const String &bookPath) const {
+  char key[10];
+  std::snprintf(key, sizeof(key), "f%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
+  return String(key);
+}
+
+void App::setBookFinished(const String &bookPath, bool finished) {
+  if (bookPath.isEmpty()) {
+    return;
+  }
+  const String key = bookFinishedKey(bookPath);
+  if (finished) {
+    preferences_.putBool(key.c_str(), true);
+  } else if (preferences_.isKey(key.c_str())) {
+    preferences_.remove(key.c_str());
+  }
+}
+
+bool App::bookIsFinished(const String &bookPath) {
+  if (bookPath.isEmpty()) {
+    return false;
+  }
+  return preferences_.getBool(bookFinishedKey(bookPath).c_str(), false);
 }
 
 uint32_t App::nextRecentSequence() {
@@ -5747,6 +5826,54 @@ void App::renderBookPicker() {
   display_.renderLibrary(bookMenuItems_, bookPickerSelectedIndex_);
 }
 
+void App::enterBookFinished(uint32_t nowMs) {
+  // Persist the final position and the read flag before showing the summary.
+  saveReadingPosition(true);
+  setBookFinished(currentBookPath_, true);
+  Serial.printf("[app] book finished: %s (%u words, %lus session)\n",
+                currentBookTitle_.c_str(), static_cast<unsigned int>(reader_.wordCount()),
+                static_cast<unsigned long>(readingSessionMs_ / 1000UL));
+  // setState() folds the trailing Playing segment into readingSessionMs_.
+  setState(AppState::Finished, nowMs);
+}
+
+void App::renderBookFinished() {
+  // Title (truncated for the tiny line) plus a one-line stats summary.
+  String title = currentBookTitle_;
+  if (title.isEmpty()) {
+    title = "Book";
+  }
+  constexpr size_t kMaxTitleChars = 40;
+  if (title.length() > kMaxTitleChars) {
+    title = title.substring(0, kMaxTitleChars - 3) + "...";
+  }
+
+  const size_t totalWords = reader_.wordCount();
+  String stats = String(static_cast<unsigned long>(totalWords)) + " words";
+
+  uint32_t avgWpm = 0;
+  if (readingSessionMs_ >= 1000UL && wordsReadThisSession_ > 0) {
+    avgWpm = static_cast<uint32_t>(
+        (static_cast<uint64_t>(wordsReadThisSession_) * 60000ULL) / readingSessionMs_);
+  }
+  if (avgWpm > 0) {
+    stats += "  -  " + String(avgWpm) + " wpm";
+  }
+
+  const uint32_t totalSeconds = readingSessionMs_ / 1000UL;
+  String timeStr;
+  if (totalSeconds >= 3600UL) {
+    timeStr = String(totalSeconds / 3600UL) + "h " + String((totalSeconds % 3600UL) / 60UL) + "m";
+  } else if (totalSeconds >= 60UL) {
+    timeStr = String(totalSeconds / 60UL) + "m " + String(totalSeconds % 60UL) + "s";
+  } else {
+    timeStr = String(totalSeconds) + "s";
+  }
+  stats += "  -  " + timeStr;
+
+  display_.renderStatus("Finished", title, stats);
+}
+
 void App::renderChapterPicker() {
   display_.renderMenu(chapterMenuItems_, chapterPickerSelectedIndex_);
 }
@@ -5911,7 +6038,12 @@ DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
 
   uint8_t percent = 0;
   const bool hasProgress = bookProgressPercent(bookIndex, percent);
-  if (hasProgress) {
+  if (bookIsFinished(storage_.bookPath(bookIndex))) {
+    if (!item.subtitle.isEmpty()) {
+      item.subtitle += " - ";
+    }
+    item.subtitle += "Read";
+  } else if (hasProgress) {
     if (!item.subtitle.isEmpty()) {
       item.subtitle += " - ";
     }
