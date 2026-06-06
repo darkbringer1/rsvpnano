@@ -467,6 +467,75 @@ void pmuShutdown() {
 #endif
 }
 
+// --- PCF85063 RTC (shared touch I2C bus, addr 0x51) -------------------------
+#if defined(BOARD_AMOLED_18)
+namespace {
+constexpr uint8_t kPcf85063Address = 0x51;
+constexpr uint8_t kPcfRegSeconds = 0x04;  // time block starts here (7 bytes)
+inline uint8_t bcd2dec(uint8_t v) { return static_cast<uint8_t>((v >> 4) * 10 + (v & 0x0F)); }
+inline uint8_t dec2bcd(uint8_t v) { return static_cast<uint8_t>(((v / 10) << 4) | (v % 10)); }
+}  // namespace
+#endif
+
+bool rtcPresent() {
+#if defined(BOARD_AMOLED_18)
+  Wire.beginTransmission(kPcf85063Address);
+  return Wire.endTransmission() == 0;
+#else
+  return false;
+#endif
+}
+
+bool rtcRead(RtcDateTime &out) {
+#if defined(BOARD_AMOLED_18)
+  Wire.beginTransmission(kPcf85063Address);
+  Wire.write(kPcfRegSeconds);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  if (Wire.requestFrom(static_cast<uint8_t>(kPcf85063Address), static_cast<uint8_t>(7)) != 7) {
+    return false;
+  }
+  const uint8_t rawSec = Wire.read();
+  const uint8_t rawMin = Wire.read();
+  const uint8_t rawHour = Wire.read();
+  const uint8_t rawDay = Wire.read();
+  (void)Wire.read();  // weekday (unused)
+  const uint8_t rawMonth = Wire.read();
+  const uint8_t rawYear = Wire.read();
+
+  out.valid = (rawSec & 0x80) == 0;  // bit7 = oscillator-stop (clock never set)
+  out.second = bcd2dec(rawSec & 0x7F);
+  out.minute = bcd2dec(rawMin & 0x7F);
+  out.hour = bcd2dec(rawHour & 0x3F);
+  out.day = bcd2dec(rawDay & 0x3F);
+  out.month = bcd2dec(rawMonth & 0x1F);
+  out.year = static_cast<uint16_t>(2000 + bcd2dec(rawYear));
+  return true;
+#else
+  (void)out;
+  return false;
+#endif
+}
+
+bool rtcWrite(const RtcDateTime &in) {
+#if defined(BOARD_AMOLED_18)
+  Wire.beginTransmission(kPcf85063Address);
+  Wire.write(kPcfRegSeconds);
+  Wire.write(dec2bcd(in.second) & 0x7F);  // clearing bit7 also clears the OS flag
+  Wire.write(dec2bcd(in.minute));
+  Wire.write(dec2bcd(in.hour));
+  Wire.write(dec2bcd(in.day));
+  Wire.write(0);  // weekday (not tracked)
+  Wire.write(dec2bcd(in.month));
+  Wire.write(dec2bcd(static_cast<uint8_t>(in.year % 100)));
+  return Wire.endTransmission() == 0;
+#else
+  (void)in;
+  return false;
+#endif
+}
+
 String pmuDebugSummary() {
 #if defined(BOARD_AMOLED_18)
   if (!pmuBeginInternal()) {

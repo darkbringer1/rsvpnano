@@ -86,6 +86,7 @@ class App {
     SettingsDisplay,
     SettingsPacing,
     SettingsBattery,
+    SettingsClock,
     WifiSettings,
     WifiNetworks,
     TextEntry,
@@ -374,6 +375,16 @@ class App {
   void selectReadingStatsItem(uint32_t nowMs);
   void loadLifetimeStats();
   void saveLifetimeStats();
+  // Reading streak (consecutive days), driven by the PCF85063 RTC.
+  void updateStreakForToday();
+  void syncClockFromNetwork(uint32_t nowMs);  // NTP -> RTC over Wi-Fi
+  bool localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const;
+  bool fetchTimezoneOffsetMinutes(int &outMinutes);  // geo-IP lookup
+  void writeLocalToRtc(const BoardConfig::RtcDateTime &local);  // local -> UTC -> RTC
+  String timezoneLabel() const;
+  // Settings > Clock submenu.
+  void openClockSettings();
+  void selectClockSettingsItem(uint32_t nowMs);
   void renderRestartConfirm();
   void renderSdCardRepairConfirm();
   void renderUpdateConfirm();
@@ -499,6 +510,11 @@ class App {
   uint64_t lifetimeReadMs_ = 0;
   uint32_t lifetimeBooksFinished_ = 0;
   bool lifetimeStatsDirty_ = false;
+  // Reading streak: consecutive calendar days with reading (needs a valid RTC).
+  uint32_t streakDays_ = 0;
+  int32_t streakLastDay_ = 0;  // day-number of the last reading day (0 = none)
+  int timezoneOffsetMinutes_ = 0;  // RTC holds UTC; this offset is applied on read
+  BoardConfig::RtcDateTime clockEdit_;  // in-progress manual clock edit (local time)
   std::vector<String> readingStatsItems_;
   size_t readingStatsSelectedIndex_ = 0;
   size_t contextPreviewStartIndex_ = 0;

@@ -88,6 +88,18 @@ struct BatteryStatus {
   bool charging = false;
 };
 
+// PCF85063 real-time clock (AMOLED board). `valid` is false if the oscillator
+// stop flag is set (the clock has never been set since losing power).
+struct RtcDateTime {
+  uint16_t year = 2000;
+  uint8_t month = 1;
+  uint8_t day = 1;
+  uint8_t hour = 0;
+  uint8_t minute = 0;
+  uint8_t second = 0;
+  bool valid = false;
+};
+
 // AXP2101 PWRKEY (the physical PWR button) events, polled from the PMU IRQ.
 enum class PowerKeyEvent : uint8_t {
   None,
@@ -108,5 +120,10 @@ bool pmuVbusPresent();  // true while USB VBUS is supplying the PMU
 PowerKeyEvent pmuPollPowerKey();
 void pmuShutdown();
 String pmuDebugSummary();  // e.g. "PMU VBUS:1 BAT:0 CHG:1" (diagnostics)
+
+// PCF85063 RTC (AMOLED board; no-ops elsewhere).
+bool rtcPresent();
+bool rtcRead(RtcDateTime &out);
+bool rtcWrite(const RtcDateTime &in);
 
 }  // namespace BoardConfig

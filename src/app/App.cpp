@@ -4,6 +4,7 @@
 #include <esp_system.h>
 #include <esp_log.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <algorithm>
 #include <climits>
 #include <cstdio>
@@ -174,8 +175,18 @@ constexpr size_t kSettingsHomeDisplayIndex = 2;
 constexpr size_t kSettingsHomeTypographyIndex = 3;
 constexpr size_t kSettingsHomeWifiIndex = 4;
 constexpr size_t kSettingsHomeBatteryIndex = 5;
-constexpr size_t kSettingsHomeUpdateIndex = 6;
-constexpr size_t kSettingsHomeFirmwareVersionIndex = 7;
+constexpr size_t kSettingsHomeClockIndex = 6;
+constexpr size_t kSettingsHomeUpdateIndex = 7;
+constexpr size_t kSettingsHomeFirmwareVersionIndex = 8;
+// Settings > Clock page rows.
+constexpr size_t kSettingsClockSyncIndex = 1;
+constexpr size_t kSettingsClockTimezoneIndex = 2;
+constexpr size_t kSettingsClockYearIndex = 3;
+constexpr size_t kSettingsClockMonthIndex = 4;
+constexpr size_t kSettingsClockDayIndex = 5;
+constexpr size_t kSettingsClockHourIndex = 6;
+constexpr size_t kSettingsClockMinuteIndex = 7;
+constexpr size_t kSettingsClockStatusIndex = 8;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayHandednessIndex = 3;
@@ -253,6 +264,52 @@ constexpr const char *kPrefRecentSeq = "seq";
 constexpr const char *kPrefLifetimeWords = "lt_words";
 constexpr const char *kPrefLifetimeMs = "lt_ms";
 constexpr const char *kPrefLifetimeBooks = "lt_books";
+constexpr const char *kPrefStreakDays = "streak";
+constexpr const char *kPrefStreakLastDay = "streak_day";
+constexpr const char *kPrefTimezoneOffset = "tz_off";
+
+// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm). Used to
+// compare calendar days for the streak and to convert between UTC and local.
+int32_t civilDayNumber(int year, int month, int day) {
+  year -= month <= 2;
+  const int era = (year >= 0 ? year : year - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(year - era * 400);
+  const unsigned doy =
+      (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + static_cast<unsigned>(day) - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + static_cast<int>(doe) - 719468;
+}
+
+// Inverse of civilDayNumber: day-count since 1970-01-01 -> civil date.
+void civilFromDayNumber(int32_t z, int &year, int &month, int &day) {
+  z += 719468;
+  const int era = (z >= 0 ? z : z - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(z - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  const int y = static_cast<int>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  day = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
+  month = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
+  year = y + (month <= 2);
+}
+
+// Floor division (rounds toward negative infinity) for time-of-day west of UTC.
+int64_t floorDiv(int64_t a, int64_t b) {
+  const int64_t q = a / b;
+  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
+}
+
+uint8_t daysInMonth(uint16_t year, uint8_t month) {
+  static const uint8_t kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (month < 1 || month > 12) {
+    return 31;
+  }
+  if (month == 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+    return 29;
+  }
+  return kDays[month - 1];
+}
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
 constexpr const char *kPrefOtaAuto = "ota_auto";
@@ -690,6 +747,7 @@ void App::begin() {
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   loadLifetimeStats();
+  timezoneOffsetMinutes_ = preferences_.getInt(kPrefTimezoneOffset, 0);
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
@@ -845,6 +903,13 @@ void App::begin() {
     // Boot diagnostics on serial only (reset/wake cause + PMU power state).
     Serial.printf("[boot] %s | %s\n", bootReason_.c_str(),
                   BoardConfig::pmuDebugSummary().c_str());
+    BoardConfig::RtcDateTime rtc;
+    if (BoardConfig::rtcRead(rtc)) {
+      Serial.printf("[boot] RTC present: %04u-%02u-%02u %02u:%02u:%02u valid=%d\n", rtc.year,
+                    rtc.month, rtc.day, rtc.hour, rtc.minute, rtc.second, rtc.valid ? 1 : 0);
+    } else {
+      Serial.println("[boot] RTC not responding at 0x51 on touch bus");
+    }
     display_.renderCenteredWord("READY");
     logApp("Display init ok");
   } else {
@@ -1094,6 +1159,7 @@ void App::setState(AppState nextState, uint32_t nowMs) {
       break;
     case AppState::Playing:
       reader_.start(nowMs);
+      updateStreakForToday();  // reading today counts toward the streak
       renderActiveReader(nowMs);
       break;
     case AppState::Finished:
@@ -1575,6 +1641,7 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender) {
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
         menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
         menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
@@ -1605,6 +1672,7 @@ void App::applyHandednessSettings(uint32_t nowMs, bool rerender) {
   if (state_ == AppState::Menu &&
       (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
        menuScreen_ == MenuScreen::WifiSettings)) {
     rebuildSettingsMenuItems();
   }
@@ -1792,6 +1860,7 @@ void App::cycleUiLanguage(uint32_t nowMs) {
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
         menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
         menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
@@ -2908,6 +2977,7 @@ void App::moveMenuSelection(int direction) {
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     selectedIndex = &settingsSelectedIndex_;
     itemCount = settingsMenuItems_.size();
@@ -2959,6 +3029,7 @@ void App::moveMenuSelection(int direction) {
   renderMenu();
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
@@ -3047,6 +3118,7 @@ void App::moveMenuSelection(int direction) {
 void App::selectMenuItem(uint32_t nowMs) {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     selectSettingsItem(nowMs);
     return;
@@ -3189,6 +3261,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsHomeBatteryIndex:
         openBatterySettings();
         return;
+      case kSettingsHomeClockIndex:
+        openClockSettings();
+        return;
       default:
         return;
     }
@@ -3196,6 +3271,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::WifiSettings) {
     selectWifiSettingsItem(nowMs);
+    return;
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsClock) {
+    selectClockSettingsItem(nowMs);
     return;
   }
 
@@ -3526,6 +3606,20 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
     default:
       return;
   }
+}
+
+String App::timezoneLabel() const {
+  if (timezoneOffsetMinutes_ == 0) {
+    return "UTC";
+  }
+  const int absMin = timezoneOffsetMinutes_ < 0 ? -timezoneOffsetMinutes_ : timezoneOffsetMinutes_;
+  String s = String("UTC") + (timezoneOffsetMinutes_ > 0 ? "+" : "-") + String(absMin / 60);
+  if (absMin % 60 != 0) {
+    char buf[5];
+    std::snprintf(buf, sizeof(buf), ":%02d", absMin % 60);
+    s += buf;
+  }
+  return s;
 }
 
 void App::scanWifiNetworks() {
@@ -3990,6 +4084,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::TypographyTune));
     settingsMenuItems_.push_back("Wi-Fi");
     settingsMenuItems_.push_back("Battery");
+    settingsMenuItems_.push_back("Clock");
     settingsMenuItems_.push_back(firmwareUpdateMenuLabel());
     settingsMenuItems_.push_back("Installed: " + firmwareVersionLabel());
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
@@ -4038,6 +4133,29 @@ void App::rebuildSettingsMenuItems() {
         (cpuMhzStandby_ <= 40 ? " (Might affect animations)" : ""));
     settingsMenuItems_.push_back("Auto-dim delay: " + autoDimDelayLabel());
     settingsMenuItems_.push_back("Auto-dim brightness level: " + autoDimBrightnessLabel());
+  } else if (menuScreen_ == MenuScreen::SettingsClock) {
+    char buf[8];
+    settingsMenuItems_.push_back(uiText(UiText::Back));
+    settingsMenuItems_.push_back("Sync via Wi-Fi");
+    settingsMenuItems_.push_back("Timezone: " + timezoneLabel());
+    std::snprintf(buf, sizeof(buf), "%04u", clockEdit_.year);
+    settingsMenuItems_.push_back(String("Year: ") + buf);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.month);
+    settingsMenuItems_.push_back(String("Month: ") + buf);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.day);
+    settingsMenuItems_.push_back(String("Day: ") + buf);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.hour);
+    settingsMenuItems_.push_back(String("Hour: ") + buf);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.minute);
+    settingsMenuItems_.push_back(String("Minute: ") + buf);
+    BoardConfig::RtcDateTime now;
+    int32_t day = 0;
+    if (localNow(now, day)) {
+      std::snprintf(buf, sizeof(buf), "%02u:%02u", now.hour, now.minute);
+      settingsMenuItems_.push_back(String("Now: ") + buf + " " + timezoneLabel());
+    } else {
+      settingsMenuItems_.push_back("Now: not set");
+    }
   }
 
   if (settingsSelectedIndex_ >= settingsMenuItems_.size()) {
@@ -4257,6 +4375,7 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
       if (state_ == AppState::Menu &&
           (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
            menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
            menuScreen_ == MenuScreen::WifiSettings)) {
         rebuildSettingsMenuItems();
         renderSettings();
@@ -4293,6 +4412,7 @@ void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, ui
   if (state_ == AppState::Menu &&
       (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
        menuScreen_ == MenuScreen::WifiSettings)) {
     rebuildSettingsMenuItems();
     renderSettings();
@@ -5862,6 +5982,7 @@ void App::renderMenu() {
 
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     renderSettings();
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
@@ -6022,7 +6143,59 @@ void App::loadLifetimeStats() {
   lifetimeWordsRead_ = preferences_.getUInt(kPrefLifetimeWords, 0);
   lifetimeReadMs_ = preferences_.getULong64(kPrefLifetimeMs, 0);
   lifetimeBooksFinished_ = preferences_.getUInt(kPrefLifetimeBooks, 0);
+  streakDays_ = preferences_.getUInt(kPrefStreakDays, 0);
+  streakLastDay_ = preferences_.getInt(kPrefStreakLastDay, 0);
   lifetimeStatsDirty_ = false;
+}
+
+bool App::localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const {
+  // RTC stores UTC; apply the timezone offset here so the offset can change
+  // without rewriting the clock.
+  BoardConfig::RtcDateTime utc;
+  if (!BoardConfig::rtcRead(utc) || !utc.valid) {
+    return false;
+  }
+  int64_t epoch = static_cast<int64_t>(civilDayNumber(utc.year, utc.month, utc.day)) * 86400 +
+                  utc.hour * 3600 + utc.minute * 60 + utc.second;
+  epoch += static_cast<int64_t>(timezoneOffsetMinutes_) * 60;
+  outDayNumber = static_cast<int32_t>(floorDiv(epoch, 86400));
+  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(outDayNumber) * 86400);
+  int y, m, d;
+  civilFromDayNumber(outDayNumber, y, m, d);
+  outLocal.year = static_cast<uint16_t>(y);
+  outLocal.month = static_cast<uint8_t>(m);
+  outLocal.day = static_cast<uint8_t>(d);
+  outLocal.hour = static_cast<uint8_t>(secOfDay / 3600);
+  outLocal.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
+  outLocal.second = static_cast<uint8_t>(secOfDay % 60);
+  outLocal.valid = true;
+  return true;
+}
+
+void App::updateStreakForToday() {
+  // Count today (local) as a reading day. Needs a valid RTC; if the clock was
+  // never set we silently skip until the time is available.
+  BoardConfig::RtcDateTime local;
+  int32_t today = 0;
+  if (!localNow(local, today)) {
+    return;
+  }
+
+  if (streakLastDay_ == 0) {
+    streakDays_ = 1;  // first ever reading day
+  } else if (today == streakLastDay_) {
+    return;  // already counted today
+  } else if (today == streakLastDay_ + 1) {
+    ++streakDays_;  // consecutive day
+  } else {
+    streakDays_ = 1;  // gap (or clock moved backwards) -> restart
+  }
+
+  streakLastDay_ = today;
+  preferences_.putUInt(kPrefStreakDays, streakDays_);
+  preferences_.putInt(kPrefStreakLastDay, streakLastDay_);
+  Serial.printf("[streak] day=%ld streak=%lu\n", static_cast<long>(today),
+                static_cast<unsigned long>(streakDays_));
 }
 
 void App::saveLifetimeStats() {
@@ -6074,6 +6247,22 @@ void App::openReadingStats() {
   }
   readingStatsItems_.push_back(String("Avg speed: ") + String(avgWpm) + " wpm");
 
+  // Reading streak + clock state (PCF85063 RTC, shown in local time).
+  BoardConfig::RtcDateTime now;
+  int32_t today = 0;
+  const bool haveClock = localNow(now, today);
+  if (haveClock) {
+    readingStatsItems_.push_back(String("Streak: ") + String(streakDays_) + " days");
+    char clockBuf[24];
+    std::snprintf(clockBuf, sizeof(clockBuf), "%04u-%02u-%02u %02u:%02u", now.year, now.month,
+                  now.day, now.hour, now.minute);
+    readingStatsItems_.push_back(String("Clock: ") + clockBuf);
+    readingStatsItems_.push_back(String("Zone: ") + timezoneLabel());
+  } else {
+    readingStatsItems_.push_back("Streak: clock not set");
+    readingStatsItems_.push_back("Set in Settings > Clock");
+  }
+
   readingStatsSelectedIndex_ = 0;  // "Back" highlighted
   menuScreen_ = MenuScreen::ReadingStats;
   renderReadingStats();
@@ -6084,13 +6273,256 @@ void App::renderReadingStats() {
 }
 
 void App::selectReadingStatsItem(uint32_t nowMs) {
-  // Only "Back" (row 0) is actionable; the stat rows are read-only.
+  // Read-only screen: only "Back" (row 0) acts. Clock setup lives in Settings.
   (void)nowMs;
   if (readingStatsSelectedIndex_ != 0) {
     return;
   }
   menuScreen_ = MenuScreen::Main;
   renderMainMenu();
+}
+
+void App::writeLocalToRtc(const BoardConfig::RtcDateTime &local) {
+  int64_t epoch = static_cast<int64_t>(civilDayNumber(local.year, local.month, local.day)) * 86400 +
+                  local.hour * 3600 + local.minute * 60 + local.second;
+  epoch -= static_cast<int64_t>(timezoneOffsetMinutes_) * 60;  // local -> UTC
+  const int32_t day = static_cast<int32_t>(floorDiv(epoch, 86400));
+  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(day) * 86400);
+  int y, m, d;
+  civilFromDayNumber(day, y, m, d);
+  BoardConfig::RtcDateTime utc;
+  utc.year = static_cast<uint16_t>(y);
+  utc.month = static_cast<uint8_t>(m);
+  utc.day = static_cast<uint8_t>(d);
+  utc.hour = static_cast<uint8_t>(secOfDay / 3600);
+  utc.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
+  utc.second = static_cast<uint8_t>(secOfDay % 60);
+  utc.valid = true;
+  BoardConfig::rtcWrite(utc);
+}
+
+void App::openClockSettings() {
+  BoardConfig::RtcDateTime local;
+  int32_t day = 0;
+  if (localNow(local, day)) {
+    clockEdit_ = local;
+  } else {
+    clockEdit_ = BoardConfig::RtcDateTime{};
+    clockEdit_.year = 2026;
+    clockEdit_.month = 1;
+    clockEdit_.day = 1;
+    clockEdit_.hour = 12;
+  }
+  clockEdit_.second = 0;
+  menuScreen_ = MenuScreen::SettingsClock;
+  settingsSelectedIndex_ = kSettingsClockSyncIndex;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::selectClockSettingsItem(uint32_t nowMs) {
+  switch (settingsSelectedIndex_) {
+    case kSettingsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeClockIndex;
+      menuScreen_ = MenuScreen::SettingsHome;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsClockSyncIndex: {
+      syncClockFromNetwork(nowMs);
+      BoardConfig::RtcDateTime local;
+      int32_t day = 0;
+      if (localNow(local, day)) {
+        clockEdit_ = local;
+      }
+      menuScreen_ = MenuScreen::SettingsClock;
+      settingsSelectedIndex_ = kSettingsClockSyncIndex;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    }
+    case kSettingsClockTimezoneIndex:
+      // Cycle UTC offset by 1h, -12h..+14h wrapping. Applied on read -> instant.
+      timezoneOffsetMinutes_ =
+          (timezoneOffsetMinutes_ >= 14 * 60) ? -12 * 60 : timezoneOffsetMinutes_ + 60;
+      preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
+      break;
+    case kSettingsClockYearIndex:
+      clockEdit_.year = (clockEdit_.year >= 2099) ? 2020 : clockEdit_.year + 1;
+      break;
+    case kSettingsClockMonthIndex:
+      clockEdit_.month = (clockEdit_.month >= 12) ? 1 : clockEdit_.month + 1;
+      break;
+    case kSettingsClockDayIndex:
+      clockEdit_.day = (clockEdit_.day >= daysInMonth(clockEdit_.year, clockEdit_.month))
+                           ? 1
+                           : clockEdit_.day + 1;
+      break;
+    case kSettingsClockHourIndex:
+      clockEdit_.hour = (clockEdit_.hour >= 23) ? 0 : clockEdit_.hour + 1;
+      break;
+    case kSettingsClockMinuteIndex:
+      clockEdit_.minute = (clockEdit_.minute >= 59) ? 0 : clockEdit_.minute + 1;
+      break;
+    default:
+      return;  // status row, etc.
+  }
+
+  // For the manual date/time rows, keep the day valid and write the RTC live.
+  if (settingsSelectedIndex_ >= kSettingsClockYearIndex &&
+      settingsSelectedIndex_ <= kSettingsClockMinuteIndex) {
+    const uint8_t maxDay = daysInMonth(clockEdit_.year, clockEdit_.month);
+    if (clockEdit_.day > maxDay) {
+      clockEdit_.day = maxDay;
+    }
+    writeLocalToRtc(clockEdit_);
+    updateStreakForToday();
+  }
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+bool App::fetchTimezoneOffsetMinutes(int &outMinutes) {
+  // ip-api.com returns the UTC offset (seconds, includes DST) for the device's
+  // public IP. Free, HTTP, no key. Hand-parse the "offset" integer.
+  HTTPClient http;
+  WiFiClient client;
+  if (!http.begin(client, "http://ip-api.com/json/?fields=status,offset")) {
+    return false;
+  }
+  http.setConnectTimeout(5000);
+  http.setTimeout(5000);
+  const int code = http.GET();
+  if (code != 200) {
+    http.end();
+    return false;
+  }
+  const String body = http.getString();
+  http.end();
+
+  const int key = body.indexOf("\"offset\"");
+  if (key < 0) {
+    return false;
+  }
+  int i = body.indexOf(':', key);
+  if (i < 0) {
+    return false;
+  }
+  ++i;
+  while (i < static_cast<int>(body.length()) && (body[i] == ' ' || body[i] == '\t')) {
+    ++i;
+  }
+  int sign = 1;
+  if (i < static_cast<int>(body.length()) && (body[i] == '-' || body[i] == '+')) {
+    if (body[i] == '-') {
+      sign = -1;
+    }
+    ++i;
+  }
+  long seconds = 0;
+  bool sawDigit = false;
+  while (i < static_cast<int>(body.length()) && body[i] >= '0' && body[i] <= '9') {
+    seconds = seconds * 10 + (body[i] - '0');
+    sawDigit = true;
+    ++i;
+  }
+  if (!sawDigit) {
+    return false;
+  }
+  outMinutes = static_cast<int>((sign * seconds) / 60);
+  return true;
+}
+
+void App::syncClockFromNetwork(uint32_t nowMs) {
+  if (blockNetworkActionForOtaCheck("Clock", nowMs)) {
+    return;
+  }
+  const OtaUpdater::Config cfg = preferredOtaConfig();
+  if (cfg.wifiSsid.isEmpty()) {
+    display_.renderStatus("Clock", "No Wi-Fi set", "Configure Wi-Fi first");
+    delay(1500);
+    return;
+  }
+
+  display_.renderProgress("Clock", "Connecting Wi-Fi", cfg.wifiSsid, 10);
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
+  uint32_t startMs = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 8000) {
+    delay(100);
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.mode(WIFI_OFF);
+    display_.renderStatus("Clock", "Wi-Fi failed", "");
+    delay(1500);
+    return;
+  }
+
+  // Auto-detect the timezone from the network (best effort); falls back to the
+  // current/manual offset if the lookup fails.
+  display_.renderProgress("Clock", "Detecting timezone", "", 45);
+  int detectedMinutes = 0;
+  if (fetchTimezoneOffsetMinutes(detectedMinutes)) {
+    timezoneOffsetMinutes_ = detectedMinutes;
+    preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
+    Serial.printf("[clock] timezone auto-detected: %s\n", timezoneLabel().c_str());
+  }
+
+  display_.renderProgress("Clock", "Getting time", "", 60);
+  // RTC stores UTC; the offset above is applied on read.
+  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
+  struct tm timeInfo;
+  bool got = false;
+  startMs = millis();
+  while (millis() - startMs < 8000) {
+    if (getLocalTime(&timeInfo, 200)) {
+      got = true;
+      break;
+    }
+    delay(100);
+  }
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+
+  if (!got || timeInfo.tm_year < 120) {  // tm_year is years since 1900; <2020 = bad
+    display_.renderStatus("Clock", "Time sync failed", "");
+    delay(1500);
+    return;
+  }
+
+  BoardConfig::RtcDateTime rtc;
+  rtc.year = static_cast<uint16_t>(timeInfo.tm_year + 1900);
+  rtc.month = static_cast<uint8_t>(timeInfo.tm_mon + 1);
+  rtc.day = static_cast<uint8_t>(timeInfo.tm_mday);
+  rtc.hour = static_cast<uint8_t>(timeInfo.tm_hour);
+  rtc.minute = static_cast<uint8_t>(timeInfo.tm_min);
+  rtc.second = static_cast<uint8_t>(timeInfo.tm_sec);
+  rtc.valid = true;
+
+  if (!BoardConfig::rtcWrite(rtc)) {
+    display_.renderStatus("Clock", "RTC write failed", "");
+    delay(1500);
+    return;
+  }
+
+  updateStreakForToday();  // start the streak now that the clock is set
+
+  // Show the local time (RTC holds UTC; localNow applies the offset).
+  BoardConfig::RtcDateTime local;
+  int32_t day = 0;
+  char buf[24];
+  if (localNow(local, day)) {
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", local.year, local.month, local.day,
+                  local.hour, local.minute);
+  } else {
+    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", rtc.year, rtc.month, rtc.day,
+                  rtc.hour, rtc.minute);
+  }
+  Serial.printf("[clock] RTC set (UTC) from NTP; local %s %s\n", buf, timezoneLabel().c_str());
+  display_.renderStatus("Clock set", buf, timezoneLabel());
+  delay(1500);
 }
 
 void App::renderChapterPicker() {
