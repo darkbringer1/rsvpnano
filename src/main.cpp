@@ -1,5 +1,7 @@
 #include <Arduino.h>
 #include <esp_log.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
 
 #include "app/App.h"
 #include "board/BoardConfig.h"
@@ -7,6 +9,12 @@
 App app;
 
 void setup() {
+  // Capture why we (re)booted before anything else can change it. This is key to
+  // debugging the power-off self-reopen: distinguishes a fresh power-on from a
+  // deep-sleep wake (our ext0 fallback) or a brownout.
+  const int resetReason = static_cast<int>(esp_reset_reason());
+  const int wakeCause = static_cast<int>(esp_sleep_get_wakeup_cause());
+
   Serial.begin(115200);
   esp_log_level_set("*", ESP_LOG_INFO);
   delay(50);
@@ -16,6 +24,7 @@ void setup() {
     delay(10);
   }
   Serial.println("[main] app setup");
+  app.setBootReason(resetReason, wakeCause);
   app.begin();
 }
 

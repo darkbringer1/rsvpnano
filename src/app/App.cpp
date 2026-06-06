@@ -1,6 +1,7 @@
 #include "app/App.h"
 
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <esp_log.h>
 #include <WiFi.h>
 #include <algorithm>
@@ -647,6 +648,33 @@ uint16_t loadPacingDelayMs(Preferences &preferences, const char *key, const char
 
 App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
 
+void App::setBootReason(int resetReason, int wakeCause) {
+  const char *reset = "?";
+  switch (resetReason) {
+    case ESP_RST_POWERON:  reset = "POWERON"; break;   // fresh power-up (PMU/USB)
+    case ESP_RST_SW:       reset = "SW"; break;
+    case ESP_RST_PANIC:    reset = "PANIC"; break;
+    case ESP_RST_INT_WDT:  reset = "INT_WDT"; break;
+    case ESP_RST_TASK_WDT: reset = "TASK_WDT"; break;
+    case ESP_RST_WDT:      reset = "WDT"; break;
+    case ESP_RST_DEEPSLEEP: reset = "DEEPSLEEP"; break; // returned from deep sleep
+    case ESP_RST_BROWNOUT: reset = "BROWNOUT"; break;
+    case ESP_RST_EXT:      reset = "EXT"; break;
+    default: break;
+  }
+  const char *wake = "none";
+  switch (wakeCause) {
+    case ESP_SLEEP_WAKEUP_EXT0:  wake = "EXT0"; break;  // our ext0(GPIO18) fallback
+    case ESP_SLEEP_WAKEUP_EXT1:  wake = "EXT1"; break;
+    case ESP_SLEEP_WAKEUP_GPIO:  wake = "GPIO"; break;
+    case ESP_SLEEP_WAKEUP_TIMER: wake = "TIMER"; break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED: wake = "none"; break;
+    default: break;
+  }
+  bootReason_ = String("reset:") + reset + " wake:" + wake;
+  Serial.printf("[boot] %s\n", bootReason_.c_str());
+}
+
 void App::begin() {
   BoardConfig::begin();
   button_.begin();
@@ -809,6 +837,9 @@ void App::begin() {
   updateBatteryStatus(bootStartedMs_, true);
 
   if (displayReady) {
+    // Boot diagnostics on serial only (reset/wake cause + PMU power state).
+    Serial.printf("[boot] %s | %s\n", bootReason_.c_str(),
+                  BoardConfig::pmuDebugSummary().c_str());
     display_.renderCenteredWord("READY");
     logApp("Display init ok");
   } else {
@@ -858,19 +889,46 @@ void App::begin() {
   Serial.println("[app] READY splash active");
 }
 
-void App::update(uint32_t nowMs) {
+// ============================================================================
+// HARDWARE BUTTON MAP — single source of truth for what each button does.
+// All physical-button handling is routed from here; do not poll buttons or add
+// button actions elsewhere. Touch gestures live in handleTouch().
+//
+// AMOLED board (BOARD_AMOLED_18) — 2 buttons:
+//   BOOT (GPIO0, handleAmoledButton):
+//     tap (release)        -> toggle menu / back one level / resume reading
+//     hold >= 900ms        -> cycle brightness
+//     tap in USB/Sync page -> exit back to main menu
+//   PWR  (AXP2101 PWRKEY, updatePmuPowerKey):
+//     tap (short press)    -> ignored (no accidental power-off)
+//     hold (long press ~4s)-> power off ("Goodbye" + PMU shutdown)
+//     hold while OFF ~2s   -> power on (PMU hardware; BOOT/touch cannot power on)
+//
+// Bar board (non-AMOLED) — 2 GPIO buttons:
+//   BOOT (handleBootButton):  tap -> brightness;  hold >=900ms -> theme
+//   PWR  (handlePowerButton): tap -> menu/back/resume;  hold >=1600ms -> power-off
+//                             confirm;  hold >=1200ms in focus timer -> cancel
+//   BOOT+PWR both held (handleStandbyCombo) -> standby
+//
+// Standby/Sleeping/Booting/UsbTransfer states gate most actions inside each
+// handler; see the per-state guards there.
+// ============================================================================
+void App::dispatchButtons(uint32_t nowMs) {
   button_.update(nowMs);
   powerButton_.update(nowMs);
 #if defined(BOARD_AMOLED_18)
-  // This board has a single usable hardware button (BOOT). Drive menu access from it.
-  handleAmoledButton(nowMs);
+  handleAmoledButton(nowMs);   // BOOT
+  updatePmuPowerKey(nowMs);    // PWR (AXP2101 PWRKEY, polled from the PMU)
 #else
-  const bool standbyComboConsumed = handleStandbyCombo(nowMs);
-  if (!standbyComboConsumed) {
+  if (!handleStandbyCombo(nowMs)) {
     handleBootButton(nowMs);
     handlePowerButton(nowMs);
   }
 #endif
+}
+
+void App::update(uint32_t nowMs) {
+  dispatchButtons(nowMs);
   if (powerOffStarted_) {
     return;
   }
@@ -1368,6 +1426,33 @@ void App::handleBootButton(uint32_t nowMs) {
     cycleBrightness(nowMs);
   }
 }
+
+#if defined(BOARD_AMOLED_18)
+void App::updatePmuPowerKey(uint32_t nowMs) {
+  // AXP2101 PWR button: a short tap opens the "are you sure" confirm; a long
+  // press commits straight to power off. (Power-on is handled by the PMU in
+  // hardware: hold PWR while the device is off.)
+  if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_) {
+    return;
+  }
+
+  const BoardConfig::PowerKeyEvent event = BoardConfig::pmuPollPowerKey();
+  switch (event) {
+    case BoardConfig::PowerKeyEvent::LongPress:
+      // Hold = power off. The hold itself is the confirmation, so no prompt.
+      Serial.println("[power] PWRKEY long press -> power off");
+      enterPowerOff(nowMs);
+      break;
+    case BoardConfig::PowerKeyEvent::ShortPress:
+      // Tap does nothing on purpose (avoids accidental power-off screens).
+      Serial.println("[power] PWRKEY short press -> ignored");
+      break;
+    case BoardConfig::PowerKeyEvent::PressDown:
+    case BoardConfig::PowerKeyEvent::None:
+      break;
+  }
+}
+#endif  // BOARD_AMOLED_18
 
 void App::handlePowerButton(uint32_t nowMs) {
   if (!powerButtonReleasedSinceBoot_) {
@@ -2590,6 +2675,15 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
+  // Swipe right = go back one level (submenu -> Main, Main -> resume reading),
+  // the same action as the hardware back button. Saves scrolling up to "Back".
+  if (deltaX > 0 && absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
+    lastMenuTapValid_ = false;
+    toggleMenuFromPowerButton(nowMs);
+    return;
+  }
+
   if (absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx)) {
     moveMenuSelection(deltaY < 0 ? -1 : 1);
@@ -2987,7 +3081,9 @@ void App::selectMenuItem(uint32_t nowMs) {
       setState(AppState::Paused, nowMs);
       return;
     case MenuPowerOff:
-      enterPowerOff(nowMs);
+      // Use the same confirm + sequence as the hardware power-off path so the
+      // menu item is not an instant, jarring black-out.
+      openPowerOffConfirm(nowMs);
       return;
     case MenuCompanionSync:
       enterCompanionSync(nowMs);
@@ -5322,8 +5418,8 @@ void App::enterPowerOff(uint32_t nowMs) {
   menuScreen_ = MenuScreen::Main;
   state_ = AppState::Sleeping;
 
-  display_.renderStatus("OFF", "Release PWR", "Hold PWR to start");
-  delay(300);
+  display_.renderStatus("Goodbye", "", "");
+  delay(1200);  // let the user see the farewell before the panel blanks
   display_.prepareForSleep();
 
   activeBookStore_.close();
@@ -5333,16 +5429,29 @@ void App::enterPowerOff(uint32_t nowMs) {
   Serial.flush();
 
   BoardConfig::holdBacklightOffForDeepSleep();
-  BoardConfig::releaseBatteryPowerHold();
 
-  const uint32_t waitStartMs = millis();
-  while (powerButton_.isHeld() && millis() - waitStartMs < kPowerOffReleaseWaitMs) {
-    powerButton_.update(millis());
-    delay(10);
+#if defined(BOARD_AMOLED_18)
+  // The PWR button is the AXP2101 PWRKEY, not a GPIO, so there is no valid ext0
+  // wake pin (arming the unused GPIO18 woke instantly -> self-reopen).
+  if (BoardConfig::pmuVbusPresent()) {
+    // On USB: cutting the PMU rail just makes VBUS repower it (POWERON reboot),
+    // so don't shut down. Park in deep sleep with NO wake source — the device
+    // stays dark until USB is unplugged/replugged.
+    Serial.println("[power] on USB; deep sleep (cannot truly power off until on battery)");
+    esp_deep_sleep_start();
+  } else {
+    // On battery: really cut the rail. Only a PWRKEY hold powers back on.
+    Serial.println("[power] on battery; AXP2101 shutdown");
+    BoardConfig::pmuShutdown();
+    esp_deep_sleep_start();  // fallback if shutdown somehow returns
   }
-
+#else
+  // Bar board: real PWR button on a GPIO. Cut the soft-latch and wake on it.
+  BoardConfig::pmuShutdown();
+  BoardConfig::releaseBatteryPowerHold();
   esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(BoardConfig::PIN_PWR_BUTTON), 0);
   esp_deep_sleep_start();
+#endif
 }
 
 void App::enterSleep(uint32_t nowMs) {

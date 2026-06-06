@@ -85,6 +85,15 @@ struct BatteryStatus {
   bool present = false;
   float voltage = 0.0f;
   uint8_t percent = 0;
+  bool charging = false;
+};
+
+// AXP2101 PWRKEY (the physical PWR button) events, polled from the PMU IRQ.
+enum class PowerKeyEvent : uint8_t {
+  None,
+  PressDown,   // button went down (negative edge) — show the confirm prompt
+  ShortPress,  // quick tap and release
+  LongPress,   // held past the PMU long-press threshold — commit to power off
 };
 
 void begin();
@@ -92,5 +101,12 @@ void lightSleepUntilBootButton();
 void holdBacklightOffForDeepSleep();
 bool readBatteryStatus(BatteryStatus &status);
 bool releaseBatteryPowerHold();
+
+// AXP2101 power-management interface (AMOLED board; no-ops elsewhere).
+bool pmuPresent();
+bool pmuVbusPresent();  // true while USB VBUS is supplying the PMU
+PowerKeyEvent pmuPollPowerKey();
+void pmuShutdown();
+String pmuDebugSummary();  // e.g. "PMU VBUS:1 BAT:0 CHG:1" (diagnostics)
 
 }  // namespace BoardConfig

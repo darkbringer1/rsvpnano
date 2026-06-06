@@ -37,6 +37,9 @@ class App {
 
   void begin();
   void update(uint32_t nowMs);
+  // Set from setup() before begin(): records why this boot happened (reset +
+  // wake cause) so it can be shown on the boot splash for power-off debugging.
+  void setBootReason(int resetReason, int wakeCause);
 
  private:
   static constexpr size_t kOtaVersionLabelMax = 32;
@@ -179,10 +182,14 @@ class App {
   void updateWpmFeedback(uint32_t nowMs);
   void updateBrightnessToast(uint32_t nowMs);
   void maybeSaveReadingPosition(uint32_t nowMs);
+  // Single entry point for all hardware-button handling (see the button map
+  // comment above App::dispatchButtons). Routes to the per-button handlers below.
+  void dispatchButtons(uint32_t nowMs);
   void handleBootButton(uint32_t nowMs);
   void handlePowerButton(uint32_t nowMs);
 #if defined(BOARD_AMOLED_18)
   void handleAmoledButton(uint32_t nowMs);
+  void updatePmuPowerKey(uint32_t nowMs);
 #endif
   bool handleStandbyCombo(uint32_t nowMs);
   void toggleMenuFromPowerButton(uint32_t nowMs);
@@ -538,6 +545,7 @@ class App {
   std::vector<int16_t> standbyVoronoiY_;
   std::vector<int16_t> standbyVoronoiDx_;
   std::vector<int16_t> standbyVoronoiDy_;
+  String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash
   String currentBookPath_;
   String currentBookTitle_;
   String pendingUpdateCurrentVersion_;

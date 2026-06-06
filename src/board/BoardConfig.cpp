@@ -5,6 +5,10 @@
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 
+#if defined(BOARD_AMOLED_18)
+#include <XPowersLib.h>
+#endif
+
 namespace BoardConfig {
 
 namespace {
@@ -234,6 +238,47 @@ bool readBatteryStatusAxp2101(BatteryStatus &status) {
   status.percent = batteryPercentForVoltage(status.voltage);
   return true;
 }
+
+// --- AXP2101 PMU control via XPowersLib (PWR button + real power off) --------
+// The hand-rolled reads above stay as a fallback; once the library PMU is up we
+// prefer it because it also gives PWRKEY events, charging state, and shutdown().
+XPowersAXP2101 gPmu;
+bool gPmuReady = false;
+bool gPmuBeginAttempted = false;
+
+bool pmuBeginInternal() {
+  if (gPmuBeginAttempted) {
+    return gPmuReady;
+  }
+  gPmuBeginAttempted = true;
+
+  // Wire is already started in begin(); XPowersLib re-begins harmlessly.
+  if (!gPmu.begin(Wire, AXP2101_SLAVE_ADDRESS, PIN_TOUCH_SDA, PIN_TOUCH_SCL)) {
+    Serial.println("[board] AXP2101 PMU begin failed (XPowersLib); using fallback reads");
+    return false;
+  }
+
+  // Enable the fuel-gauge ADC so getBatteryPercent() is meaningful.
+  gPmu.enableBattDetection();
+  gPmu.enableBattVoltageMeasure();
+  gPmu.enableVbusVoltageMeasure();
+  gPmu.enableSystemVoltageMeasure();
+
+  // PWRKEY timing: a long hold (~4s) powers off; while OFF, the PMU powers the
+  // board back on only when PWRKEY is held ~2s (a tap will not power on).
+  gPmu.setPowerKeyPressOffTime(XPOWERS_POWEROFF_4S);
+  gPmu.setPowerKeyPressOnTime(XPOWERS_POWERON_2S);
+
+  // PWRKEY events: short tap (ignored) and long press (commit to power off).
+  // Clear any latched state from boot.
+  gPmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
+  gPmu.clearIrqStatus();
+  gPmu.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
+
+  gPmuReady = true;
+  Serial.println("[board] AXP2101 PMU ready (XPowersLib)");
+  return true;
+}
 #endif  // BOARD_AMOLED_18
 
 }  // namespace
@@ -258,6 +303,10 @@ void begin() {
   Wire1.setTimeOut(10);
   holdBatteryPowerIfAvailable();
   disableBatteryAdcPathIfAvailable();
+
+#if defined(BOARD_AMOLED_18)
+  pmuBeginInternal();  // bring up the AXP2101 PMU (PWR button + battery + power off)
+#endif
 
 #if !defined(BOARD_AMOLED_18)
   // On AMOLED, PIN_BATTERY_ADC overlaps an LCD data line; battery comes from AXP2101 instead.
@@ -298,7 +347,19 @@ void holdBacklightOffForDeepSleep() {
 bool readBatteryStatus(BatteryStatus &status) {
   status = BatteryStatus{};
 #if defined(BOARD_AMOLED_18)
-  return readBatteryStatusAxp2101(status);  // AXP2101 PMU over Wire (15/14).
+  if (pmuBeginInternal()) {
+    status.charging = gPmu.isCharging();
+    status.voltage = static_cast<float>(gPmu.getBattVoltage()) / 1000.0f;
+    const int pct = gPmu.getBatteryPercent();
+    status.present = gPmu.isBatteryConnect();
+    if (pct >= 0) {
+      status.percent = static_cast<uint8_t>(pct);
+    } else if (status.present) {
+      status.percent = batteryPercentForVoltage(status.voltage);
+    }
+    return status.present;
+  }
+  return readBatteryStatusAxp2101(status);  // fallback: hand-rolled AXP2101 reads.
 #else
   enableBatteryAdcPathIfAvailable();
   delay(12);
@@ -360,6 +421,67 @@ bool releaseBatteryPowerHold() {
   gBatteryPowerHoldEnabled = false;
   Serial.println("[board] Battery power hold released");
   return true;
+}
+
+bool pmuPresent() {
+#if defined(BOARD_AMOLED_18)
+  return pmuBeginInternal();
+#else
+  return false;
+#endif
+}
+
+PowerKeyEvent pmuPollPowerKey() {
+#if defined(BOARD_AMOLED_18)
+  if (!pmuBeginInternal()) {
+    return PowerKeyEvent::None;
+  }
+  gPmu.getIrqStatus();  // latch current IRQ flags
+  PowerKeyEvent event = PowerKeyEvent::None;
+  if (gPmu.isPekeyLongPressIrq()) {
+    event = PowerKeyEvent::LongPress;
+  } else if (gPmu.isPekeyShortPressIrq()) {
+    event = PowerKeyEvent::ShortPress;
+  }
+  gPmu.clearIrqStatus();
+  return event;
+#else
+  return PowerKeyEvent::None;
+#endif
+}
+
+bool pmuVbusPresent() {
+#if defined(BOARD_AMOLED_18)
+  return pmuBeginInternal() && gPmu.isVbusIn();
+#else
+  return false;
+#endif
+}
+
+void pmuShutdown() {
+#if defined(BOARD_AMOLED_18)
+  if (pmuBeginInternal()) {
+    Serial.flush();
+    gPmu.shutdown();  // cut the main rail; only PWRKEY can power back on
+  }
+#endif
+}
+
+String pmuDebugSummary() {
+#if defined(BOARD_AMOLED_18)
+  if (!pmuBeginInternal()) {
+    return String("PMU:absent");
+  }
+  String s = "PMU VBUS:";
+  s += gPmu.isVbusIn() ? "1" : "0";
+  s += " BAT:";
+  s += gPmu.isBatteryConnect() ? "1" : "0";
+  s += " CHG:";
+  s += gPmu.isCharging() ? "1" : "0";
+  return s;
+#else
+  return String("PMU:n/a");
+#endif
 }
 
 }  // namespace BoardConfig
