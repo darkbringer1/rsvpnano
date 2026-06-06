@@ -224,9 +224,14 @@ do_build() {
 }
 do_monitor() {
   local p; p="$(resolved_port)"
+  if [[ -z "$p" ]]; then
+    err "No Espressif board detected — nothing to monitor."
+    info "Plug the board in (it re-enumerates after a reset; a cold unplug/replug helps)."
+    info "Then press r to rescan. Refusing to fall back to a stray port (e.g. Bluetooth)."
+    return 1
+  fi
   printf "\n  %sCtrl-C to exit monitor%s\n\n" "$dim" "$r"
-  if [[ -n "$p" ]]; then $PIO device monitor -p "$p" -b 115200
-  else $PIO device monitor -b 115200; fi
+  $PIO device monitor -p "$p" -b 115200
 }
 do_test()   { printf "\n"; $PIO test -e native_test; }
 do_clean()  { printf "\n"; $PIO run -e "$ENV" -t clean; }
@@ -288,7 +293,7 @@ menu() {
     1) do_flash;          pause ;;
     2) do_build;          pause ;;
     3) do_flash monitor ;;            # monitor owns the terminal afterwards
-    4) do_monitor ;;
+    4) do_monitor || pause ;;
     5) do_test;           pause ;;
     6) do_clean;          pause ;;
     7) do_export;         pause ;;

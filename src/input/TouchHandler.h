@@ -38,6 +38,7 @@ class TouchHandler {
   uint32_t backoffUntilMs_ = 0;
   uint32_t lastTouchSampleMs_ = 0;
   uint8_t consecutiveReadFailures_ = 0;
+  uint32_t firstReadFailureMs_ = 0;  // AMOLED: start of a continuous read-failure streak (0 = none).
   uint8_t emptyTouchSamples_ = 0;
   bool touchActive_ = false;
   BoardConfig::UiOrientation uiOrientation_ =

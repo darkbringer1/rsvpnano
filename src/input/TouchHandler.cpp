@@ -15,6 +15,12 @@ constexpr uint32_t kFailureBackoffMs = 250;
 constexpr uint32_t kRecoveryBackoffMs = 1000;
 constexpr uint8_t kFailuresBeforeRecovery = 5;
 constexpr uint8_t kReleaseConfirmSamples = 2;
+// FT3168 drops into a low-power monitor mode while idle and NACKs reads until a
+// real touch wakes it, so transient read failures are NORMAL — not a hung bus.
+// Only a continuously-failing streak this long is treated as a genuine hang
+// worth a (rare) bus recovery, which also briefly disturbs the AXP2101 PMU that
+// shares this I2C bus. Keep it long so routine idle never thrashes the bus.
+constexpr uint32_t kHangRecoveryWindowMs = 30000;
 
 uint16_t clampDisplayX(uint16_t x) {
   return std::min<uint16_t>(x, static_cast<uint16_t>(BoardConfig::DISPLAY_WIDTH - 1));
@@ -39,6 +45,7 @@ bool TouchHandler::begin() {
   backoffUntilMs_ = 0;
   lastTouchSampleMs_ = 0;
   consecutiveReadFailures_ = 0;
+  firstReadFailureMs_ = 0;
   emptyTouchSamples_ = 0;
   touchActive_ = false;
   lastX_ = 0;
@@ -91,6 +98,7 @@ void TouchHandler::cancel() {
   backoffUntilMs_ = 0;
   lastTouchSampleMs_ = 0;
   consecutiveReadFailures_ = 0;
+  firstReadFailureMs_ = 0;
   emptyTouchSamples_ = 0;
 }
 
@@ -167,6 +175,25 @@ bool TouchHandler::poll(TouchEvent &event) {
 
   uint8_t data[8] = {0};
   if (!readTouchPacket(data, sizeof(data))) {
+#if defined(BOARD_AMOLED_18)
+    // FT3168: a read NACK almost always just means "idle, no finger" — the chip
+    // is in low-power monitor mode and ACKs again the instant it's touched, so
+    // touch keeps working without any intervention. Do NOT re-probe per failure:
+    // that spams the log and yanks the shared PMU bus out from under battery
+    // polling. Only after a *continuous* failure streak long enough to indicate a
+    // truly hung bus do we attempt one quiet recovery, then throttle further
+    // attempts to once per window.
+    if (firstReadFailureMs_ == 0) {
+      firstReadFailureMs_ = now;
+    }
+    if (now - firstReadFailureMs_ >= kHangRecoveryWindowMs) {
+      Serial.println("[touch] FT3168 unresponsive >30s; attempting bus recovery");
+      reinitialize();
+      firstReadFailureMs_ = now;  // throttle the next attempt by a full window
+    }
+    backoffUntilMs_ = now + kFailureBackoffMs;
+    return false;
+#else
     if (++consecutiveReadFailures_ >= kFailuresBeforeRecovery) {
       // A burst of read failures happens when the panel sleeps/wakes (screensaver,
       // standby) disturbs the shared I2C bus, or the controller drops into a
@@ -181,8 +208,10 @@ bool TouchHandler::poll(TouchEvent &event) {
       backoffUntilMs_ = now + kFailureBackoffMs;
     }
     return false;
+#endif
   }
   consecutiveReadFailures_ = 0;
+  firstReadFailureMs_ = 0;
 
 #if defined(BOARD_AMOLED_18)
   const uint8_t points = data[0] & 0x0F;  // FT3168 TD_STATUS
@@ -209,6 +238,7 @@ bool TouchHandler::poll(TouchEvent &event) {
 
   backoffUntilMs_ = 0;
   consecutiveReadFailures_ = 0;
+  firstReadFailureMs_ = 0;
   emptyTouchSamples_ = 0;
   lastTouchSampleMs_ = now;
 
