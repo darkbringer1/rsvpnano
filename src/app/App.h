@@ -327,6 +327,10 @@ class App {
 #if defined(BOARD_AMOLED_18)
   void updateIdleStandby(uint32_t nowMs);
   void handleAmoledStandbyWake(uint32_t nowMs);
+  void enterPowerSaving(uint32_t nowMs);
+  void exitPowerSaving(uint32_t nowMs);
+  void updateDeepStandbyIdle(uint32_t nowMs);
+  String deepStandbyDelayLabel() const;
 #endif
   void seedStandbyScreensaver(uint32_t nowMs);
   void stepStandbyScreensaver(uint32_t nowMs);
@@ -462,6 +466,7 @@ class App {
 
   AppState state_ = AppState::Booting;
   AppState standbyReturnState_ = AppState::Paused;
+  AppState powerSaveReturnState_ = AppState::Paused;
   AppState powerOffConfirmReturnState_ = AppState::Paused;
   DisplayManager display_;
   AudioManager audio_;
@@ -494,6 +499,8 @@ class App {
   uint32_t lastReaderTapMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
+  uint32_t powerSaveEnteredMs_ = 0;
+  uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; PWR-tap deep standby auto-enter.
   uint32_t lastStandbyFrameMs_ = 0;
   uint32_t standbyLifeGeneration_ = 0;
   uint32_t standbyScreensaverRng_ = 1;

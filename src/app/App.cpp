@@ -217,6 +217,7 @@ constexpr size_t kSettingsBatteryCpuMenuIndex = 4;
 constexpr size_t kSettingsBatteryCpuStandbyIndex = 5;
 constexpr size_t kSettingsBatteryAutoDimDelayIndex = 6;
 constexpr size_t kSettingsBatteryAutoDimLevelIndex = 7;
+constexpr size_t kSettingsBatteryStandbyDelayIndex = 8;  // AMOLED only
 
 constexpr size_t kBookPickerBackIndex = 0;
 constexpr size_t kChapterPickerBackIndex = 0;
@@ -320,6 +321,7 @@ constexpr const char *kPrefCpuMenu = "cpu_menu";
 constexpr const char *kPrefCpuStandby = "cpu_stby";
 constexpr const char *kPrefAutoDimLevel = "dim_lvl";
 constexpr const char *kPrefAutoDimDelay = "dim_dly";
+constexpr const char *kPrefDeepStandbyDelay = "ps_dly";
 constexpr const char *kPrefTimerDurationByGenre[FocusTimer::kGenreCount] = {
     "tmr_dur_0",  // Chores
     "tmr_dur_1",  // RsvpNano (Work)
@@ -857,6 +859,15 @@ void App::begin() {
       autoDimDelayMs_ = savedDimDelay;
     }
   }
+#if defined(BOARD_AMOLED_18)
+  {
+    const uint32_t savedPs = preferences_.getUInt(kPrefDeepStandbyDelay, deepStandbyDelayMs_);
+    if (savedPs == 0 || savedPs == 60000 || savedPs == 180000 || savedPs == 300000 ||
+        savedPs == 600000) {
+      deepStandbyDelayMs_ = savedPs;
+    }
+  }
+#endif
   pacingLongWordDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingLongMs, kPrefLegacyPacingLong);
   pacingComplexWordDelayMs_ =
@@ -1003,6 +1014,22 @@ void App::update(uint32_t nowMs) {
     return;
   }
 
+#if defined(BOARD_AMOLED_18)
+  if (state_ == AppState::PowerSaving) {
+    // Deep standby: display + touch off. dispatchButtons() above already ran
+    // updatePmuPowerKey — a PWR tap is the only thing that wakes us. Skip
+    // everything else (battery overlay, touch, render) so nothing draws to the
+    // sleeping panel until then.
+    if (nowMs - lastStateLogMs_ > 1500) {
+      lastStateLogMs_ = nowMs;
+      ESP_LOGI(kAppTag, "state=%s", stateName(state_));
+      Serial.printf("[app] state=%s ms=%lu\n", stateName(state_),
+                    static_cast<unsigned long>(nowMs));
+    }
+    return;
+  }
+#endif
+
   const bool batteryChanged = updateBatteryStatus(nowMs);
   if (powerOffStarted_) {
     return;
@@ -1026,6 +1053,10 @@ void App::update(uint32_t nowMs) {
     handleAmoledStandbyWake(nowMs);
     if (state_ != AppState::Standby) {
       return;  // Woke up this frame; resume normal handling next tick.
+    }
+    updateDeepStandbyIdle(nowMs);  // Screensaver standby can fall through to deep standby.
+    if (state_ != AppState::Standby) {
+      return;
     }
 #endif
     handleTouch(nowMs);
@@ -1053,6 +1084,10 @@ void App::update(uint32_t nowMs) {
   maybeSaveReadingPosition(nowMs);
   updateTimeEstimateBuild(nowMs);
 #if defined(BOARD_AMOLED_18)
+  updateDeepStandbyIdle(nowMs);  // deep standby auto-enter (own configurable delay)
+  if (state_ == AppState::PowerSaving) {
+    return;
+  }
   updateIdleStandby(nowMs);
 #endif
 
@@ -1088,6 +1123,8 @@ const char *App::stateName(AppState state) const {
       return "UsbTransfer";
     case AppState::Standby:
       return "Standby";
+    case AppState::PowerSaving:
+      return "PowerSaving";
     case AppState::Sleeping:
       return "Sleeping";
   }
@@ -1178,6 +1215,9 @@ void App::setState(AppState nextState, uint32_t nowMs) {
       seedStandbyScreensaver(nowMs);
       updateStandbyScreensaver(nowMs, true);
       break;
+    case AppState::PowerSaving:
+      // Screen + touch are already off; nothing to draw.
+      break;
     case AppState::Sleeping:
       display_.renderCenteredWord("SLEEP");
       break;
@@ -1221,6 +1261,7 @@ void App::applyStateCpuFrequency() {
       mhz = cpuMhzMenu_;
       break;
     case AppState::Standby:
+    case AppState::PowerSaving:
       mhz = cpuMhzStandby_;
       break;
     default:
@@ -1405,7 +1446,9 @@ void App::handleAmoledButton(uint32_t nowMs) {
   // Single hardware button (BOOT): short press toggles the menu / backs out of a
   // submenu; long press cycles brightness.
   if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_ ||
-      state_ == AppState::Standby) {
+      state_ == AppState::Standby || state_ == AppState::PowerSaving) {
+    // In deep standby BOOT does nothing — only a PWR tap wakes. Acting here would
+    // flip state without waking the panel (black screen + live background touches).
     return;
   }
 
@@ -1522,8 +1565,15 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
       enterPowerOff(nowMs);
       break;
     case BoardConfig::PowerKeyEvent::ShortPress:
-      // Tap does nothing on purpose (avoids accidental power-off screens).
-      Serial.println("[power] PWRKEY short press -> ignored");
+      // Tap toggles deep standby (screen + touch off). It is the only gesture for
+      // this mode: BOOT tap/hold stay menu/brightness, PWR hold stays power-off.
+      if (state_ == AppState::PowerSaving) {
+        if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
+          exitPowerSaving(nowMs);
+        }
+      } else {
+        enterPowerSaving(nowMs);
+      }
       break;
     case BoardConfig::PowerKeyEvent::PressDown:
     case BoardConfig::PowerKeyEvent::None:
@@ -3548,6 +3598,24 @@ void App::selectBatterySettingsItem(uint32_t nowMs) {
                     static_cast<unsigned int>(autoDimBrightnessPercent_));
       break;
     }
+#if defined(BOARD_AMOLED_18)
+    case kSettingsBatteryStandbyDelayIndex: {
+      if (deepStandbyDelayMs_ == 0) {
+        deepStandbyDelayMs_ = 60000;
+      } else if (deepStandbyDelayMs_ <= 60000) {
+        deepStandbyDelayMs_ = 180000;
+      } else if (deepStandbyDelayMs_ <= 180000) {
+        deepStandbyDelayMs_ = 300000;
+      } else if (deepStandbyDelayMs_ <= 300000) {
+        deepStandbyDelayMs_ = 600000;
+      } else {
+        deepStandbyDelayMs_ = 0;
+      }
+      preferences_.putUInt(kPrefDeepStandbyDelay, deepStandbyDelayMs_);
+      Serial.printf("[power] deep standby delay -> %s\n", deepStandbyDelayLabel().c_str());
+      break;
+    }
+#endif
     default:
       return;
   }
@@ -4133,6 +4201,9 @@ void App::rebuildSettingsMenuItems() {
         (cpuMhzStandby_ <= 40 ? " (Might affect animations)" : ""));
     settingsMenuItems_.push_back("Auto-dim delay: " + autoDimDelayLabel());
     settingsMenuItems_.push_back("Auto-dim brightness level: " + autoDimBrightnessLabel());
+#if defined(BOARD_AMOLED_18)
+    settingsMenuItems_.push_back("Standby after: " + deepStandbyDelayLabel());
+#endif
   } else if (menuScreen_ == MenuScreen::SettingsClock) {
     char buf[8];
     settingsMenuItems_.push_back(uiText(UiText::Back));
@@ -5141,6 +5212,91 @@ void App::handleAmoledStandbyWake(uint32_t nowMs) {
       noteActivity(nowMs);
     }
   }
+}
+
+void App::enterPowerSaving(uint32_t nowMs) {
+  if (state_ == AppState::PowerSaving || state_ == AppState::Booting ||
+      state_ == AppState::UsbTransfer || state_ == AppState::CompanionSync ||
+      state_ == AppState::Sleeping || powerOffStarted_) {
+    return;
+  }
+
+  // Remember a sensible place to come back to; reading is saved and resumes paused.
+  AppState ret = state_;
+  if (ret == AppState::Playing) {
+    saveReadingPosition(true);
+    ret = AppState::Paused;
+  }
+  powerSaveReturnState_ = (ret == AppState::Menu) ? AppState::Menu : AppState::Paused;
+
+  // Sleep the panel. NOTE: do NOT touch_.end() here — TouchHandler::end() calls
+  // Wire.end(), and the AXP2101 PMU shares that same I2C bus (pins 15/14). Killing
+  // the bus would make the PWR key unreadable, so we could never wake. Instead we
+  // simply stop polling touch (the PowerSaving update branch skips handleTouch),
+  // which disables touch input while leaving the bus alive for the PMU.
+  if (touchInitialized_) {
+    touch_.cancel();
+  }
+  display_.prepareForSleep();
+  standbyScreenOffActive_ = false;  // clear any leftover screensaver-standby flag
+
+  powerSaveEnteredMs_ = nowMs;
+  setState(AppState::PowerSaving, nowMs);
+  Serial.println("[power] deep standby on (screen + touch off; tap PWR to wake)");
+}
+
+void App::exitPowerSaving(uint32_t nowMs) {
+  if (state_ != AppState::PowerSaving) {
+    return;
+  }
+
+  display_.wakeFromSleep();
+  if (touchInitialized_) {
+    touch_.cancel();  // discard any stale touch state accrued while parked
+  }
+
+  AppState next = powerSaveReturnState_;
+  if (next != AppState::Paused && next != AppState::Menu) {
+    next = AppState::Paused;
+  }
+  setState(next, nowMs);
+  noteActivity(nowMs);
+  Serial.println("[power] deep standby off (woke on PWR tap)");
+}
+
+void App::updateDeepStandbyIdle(uint32_t nowMs) {
+  if (deepStandbyDelayMs_ == 0 || state_ == AppState::PowerSaving) {
+    return;  // disabled, or already there.
+  }
+  // Eligible from the resting states and from the screensaver standby. Other
+  // states (reading, sync, USB, boot) keep their own activity alive elsewhere.
+  if (state_ != AppState::Paused && state_ != AppState::Menu &&
+      state_ != AppState::Finished && state_ != AppState::Standby) {
+    return;
+  }
+  if (lastActivityMs_ == 0) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
+  if (nowMs - lastActivityMs_ >= deepStandbyDelayMs_) {
+    enterPowerSaving(nowMs);
+  }
+}
+
+String App::deepStandbyDelayLabel() const {
+  if (deepStandbyDelayMs_ == 0) {
+    return "Off";
+  }
+  if (deepStandbyDelayMs_ <= 60000) {
+    return "1min";
+  }
+  if (deepStandbyDelayMs_ <= 180000) {
+    return "3min";
+  }
+  if (deepStandbyDelayMs_ <= 300000) {
+    return "5min";
+  }
+  return "10min";
 }
 #endif  // BOARD_AMOLED_18
 
