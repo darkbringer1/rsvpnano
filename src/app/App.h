@@ -21,6 +21,7 @@
 #include "input/TouchHandler.h"
 #include "reader/ReadingLoop.h"
 #include "rss/RssFeedManager.h"
+#include "sensor/MotionSensor.h"
 #include "storage/StorageManager.h"
 #include "sync/CompanionSyncManager.h"
 #include "timer/FocusTimer.h"
@@ -87,7 +88,7 @@ class App {
     SdCardRepairConfirm,
     UpdateConfirm,
     PowerOffConfirm,
-    FocusTimerGenres,
+    FocusTimerPresets,
     FocusTimerSession,
   };
 
@@ -182,8 +183,11 @@ class App {
   void openFocusTimer();
   void updateFocusTimer(uint32_t nowMs);
   void resetFocusTimer();
-  void rebuildFocusTimerGenreMenuItems();
-  void selectFocusTimerGenre(uint32_t nowMs);
+  void openFocusTimerPresetPicker();
+  void rebuildFocusTimerPresetMenuItems();
+  void selectFocusTimerPreset(uint32_t nowMs);
+  void loadFocusTimerPreferences();
+  void saveFocusTimerPreset(FocusTimer::Preset preset);
   void openSettings();
   void selectSettingsItem(uint32_t nowMs);
   void openBatterySettings();
@@ -290,7 +294,7 @@ class App {
   void renderSdCardRepairConfirm();
   void renderUpdateConfirm();
   void renderPowerOffConfirm();
-  void renderFocusTimerGenres();
+  void renderFocusTimerPresets();
   void renderFocusTimerSession();
   void renderActiveReader(uint32_t nowMs);
   bool updateChapterTransition(uint32_t nowMs);
@@ -343,12 +347,15 @@ class App {
   void reloadRuntimePreferences(uint32_t nowMs, bool rerender);
   BoardConfig::UiOrientation readerUiOrientation() const;
   bool uiRotated180() const;
+  void updateAutoOrientation(uint32_t nowMs);
+  void refreshCurrentScreen(uint32_t nowMs);
+  void cycleOrientationLock(uint32_t nowMs);
+  String orientationLockLabel() const;
   uint8_t effectiveAnchorPercent() const;
   DisplayManager::TypographyConfig effectiveTypographyConfig() const;
   uint32_t currentReaderContentToken() const;
   String formatFocusTimerRemaining(uint32_t nowMs) const;
   String formatFocusTimerDuration(uint32_t durationMs) const;
-  String focusTimerCountsLabel() const;
   void playFocusTimerCue(FocusTimer::Cue cue);
 
   AppState state_ = AppState::Booting;
@@ -357,6 +364,7 @@ class App {
   AppState powerOffConfirmReturnState_ = AppState::Paused;
   DisplayManager display_;
   AudioManager audio_;
+  MotionSensor motion_;
   FocusTimer focusTimer_;
   ReadingLoop reader_;
   ButtonHandler button_;
@@ -425,7 +433,7 @@ class App {
   size_t sdCardRepairConfirmSelectedIndex_ = 0;
   size_t updateConfirmSelectedIndex_ = 0;
   size_t powerOffConfirmSelectedIndex_ = 0;
-  size_t focusTimerGenreSelectedIndex_ = 0;
+  size_t focusTimerPresetSelectedIndex_ = 0;
   uint8_t brightnessLevelIndex_ = 4;
   uint8_t readerFontSizeIndex_ = 0;
   uint16_t pacingLongWordDelayMs_ = 200;
@@ -438,7 +446,7 @@ class App {
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
   MenuScreen powerOffConfirmReturnScreen_ = MenuScreen::Main;
   std::vector<String> settingsMenuItems_;
-  std::vector<String> focusTimerGenreMenuItems_;
+  std::vector<String> focusTimerPresetMenuItems_;
   std::vector<DisplayManager::LibraryItem> wifiNetworkMenuItems_;
   std::vector<DisplayManager::LibraryItem> bookMenuItems_;
   std::vector<size_t> bookPickerBookIndices_;
@@ -479,6 +487,12 @@ class App {
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
+  bool focusTimerChimeEnabled_ = true;
+  bool orientationLockEnabled_ = false;  // false = app-wide 180 auto-rotate active
+  bool autoFlip180_ = false;             // current IMU-driven 180 flip state
+  bool autoFlipCandidate_ = false;
+  uint32_t autoFlipCandidateSinceMs_ = 0;
+  uint32_t lastOrientLogMs_ = 0;
   bool contextViewVisible_ = false;
   bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;

@@ -1,307 +1,303 @@
 #include "timer/FocusTimer.h"
 
-#include <Wire.h>
 #include <math.h>
 
 #include "board/BoardConfig.h"
 
-#if defined(BOARD_AMOLED_18)
-#define IMU_WIRE Wire  // QMI8658 shares the touch I2C bus (SDA15/SCL14) on the AMOLED board
-#else
-#define IMU_WIRE Wire1
-#endif
-
 namespace {
-
-constexpr uint8_t kImuAddress = 0x6B;
-constexpr uint8_t kImuWhoAmIReg = 0x00;
-constexpr uint8_t kImuCtrl1Reg = 0x02;
-constexpr uint8_t kImuCtrl2Reg = 0x03;
-constexpr uint8_t kImuCtrl5Reg = 0x06;
-constexpr uint8_t kImuCtrl7Reg = 0x08;
-constexpr uint8_t kImuCtrl8Reg = 0x09;
-constexpr uint8_t kImuAccelStartReg = 0x35;
-constexpr uint8_t kImuResetReg = 0x60;
-constexpr uint8_t kImuResetValue = 0xB0;
-constexpr uint8_t kImuResetResultReg = 0x4D;
-constexpr uint8_t kImuResetResultValue = 0x80;
-constexpr uint8_t kImuWhoAmIValue = 0x05;
 
 #if defined(BOARD_AMOLED_18)
 constexpr uint32_t kOrientationStableMs = 1400;  // less twitchy: tilting to read won't trigger
 #else
 constexpr uint32_t kOrientationStableMs = 700;
 #endif
-constexpr uint32_t kTouchStartArmDelayMs = 350;
-constexpr uint32_t kPostTimerFlipGraceMs = 900;
-constexpr uint32_t kFeedbackMs = 900;
-constexpr uint32_t kWorkDurationMs = 20UL * 60UL * 1000UL;
-constexpr uint32_t kBreakDurationMs = 5UL * 60UL * 1000UL;
+// After any FSM transition, ignore orientation intents for a moment so the
+// gesture that caused the change does not immediately re-trigger.
+constexpr uint32_t kOrientationGraceMs = 1200;
 
-constexpr uint32_t kTouchDurations[] = {
-    2UL * 60UL * 1000UL,
-    5UL * 60UL * 1000UL,
-    10UL * 60UL * 1000UL,
-    15UL * 60UL * 1000UL,
-    20UL * 60UL * 1000UL,
-    25UL * 60UL * 1000UL,
-    30UL * 60UL * 1000UL,
-    35UL * 60UL * 1000UL,
-    40UL * 60UL * 1000UL,
-    45UL * 60UL * 1000UL,
-    50UL * 60UL * 1000UL,
-    60UL * 60UL * 1000UL,
-};
-constexpr size_t kTouchDurationCount = sizeof(kTouchDurations) / sizeof(kTouchDurations[0]);
+// Setup field value ranges.
+constexpr uint16_t kWorkMinMin = 5;
+constexpr uint16_t kWorkMinMax = 120;
+constexpr uint16_t kWorkMinStep = 5;
+constexpr uint16_t kBreakMinMin = 1;
+constexpr uint16_t kBreakMinMax = 30;
+constexpr uint16_t kBreakMinStep = 1;
+constexpr uint8_t kRoundsMin = 1;
+constexpr uint8_t kRoundsMax = 8;
+constexpr uint16_t kLongBreakMinMin = 5;
+constexpr uint16_t kLongBreakMinMax = 60;
+constexpr uint16_t kLongBreakMinStep = 5;
 
 constexpr float kSideAxisThreshold = 0.78f;
 constexpr float kCrossAxisLimit = 0.42f;
 constexpr float kFlatAxisThreshold = 0.84f;
 
+uint16_t clampStep(uint16_t value, int direction, uint16_t step, uint16_t lo, uint16_t hi) {
+  int next = static_cast<int>(value) + direction * static_cast<int>(step);
+  if (next < static_cast<int>(lo)) {
+    next = lo;
+  } else if (next > static_cast<int>(hi)) {
+    next = hi;
+  }
+  return static_cast<uint16_t>(next);
+}
+
 }  // namespace
 
-bool FocusTimer::begin() { return initImu(); }
-
-void FocusTimer::open() {
-  if (!imuAvailable_) {
-    initImu();
+bool FocusTimer::begin(MotionSensor *motion) {
+  motion_ = motion;
+  for (uint8_t i = 0; i < kPresetCount; ++i) {
+    presets_[i] = defaultConfig(static_cast<Preset>(i));
   }
+  return imuAvailable();
+}
 
+void FocusTimer::open(uint32_t nowMs) {
   clearSession();
   resetOrientationStability();
-  state_ = imuAvailable_ ? State::GenreSelect : State::Unavailable;
-  stateStartedMs_ = millis();
+  state_ = State::PresetSelect;
+  stateStartedMs_ = nowMs;
 }
 
 void FocusTimer::update(uint32_t nowMs) {
-  if (imuAvailable_) {
+  if (imuAvailable()) {
     updateOrientation(nowMs);
   }
 
   switch (state_) {
-    case State::Unavailable:
-    case State::GenreSelect:
-      break;
-
-    case State::WaitForTouchStart:
-      if (orientationInputArmed(nowMs) && isShortSide(stableOrientation_)) {
-        startMode(TimerMode::Touch, nowMs, kTouchDurations[touchDurationByGenre_[genreIdx()]], stableOrientation_);
-        transitionTo(State::TouchRunning, nowMs);
-      }
-      break;
-
-    case State::TouchRunning:
-      if (timerExpired(nowMs)) {
-        completeActiveTimer();
-        resetOrientationStability();
-        transitionTo(State::WaitAfterTouch, nowMs);
-      } else if (isShortSide(stableOrientation_) &&
-                 stableOrientation_ == oppositeShortSide(lastShortSide_)) {
-        startMode(TimerMode::Touch, nowMs, kTouchDurations[touchDurationByGenre_[genreIdx()]], stableOrientation_);
-        resetOrientationStability();
-      }
-      break;
-
-    case State::WaitAfterTouch:
-      if (!orientationInputArmed(nowMs)) {
-        break;
-      }
-      if (stableOrientation_ == oppositeShortSide(lastShortSide_)) {
-        startMode(TimerMode::Work, nowMs, workMinutesForGenre(genre_) * 60UL * 1000UL,
-                  stableOrientation_);
-        transitionTo(State::WorkRunning, nowMs);
-      } else if (stableOrientation_ == OrientationState::LongSide) {
-        startMode(TimerMode::Break, nowMs, kBreakDurationMs, OrientationState::LongSide);
-        transitionTo(State::BreakRunning, nowMs);
-      }
-      break;
-
     case State::WorkRunning:
-      if (timerExpired(nowMs)) {
-        completeActiveTimer();
-        resetOrientationStability();
-        transitionTo(State::WaitAfterWork, nowMs);
-      }
-      break;
-
-    case State::WaitAfterWork:
-      if (!orientationInputArmed(nowMs)) {
-        break;
-      }
-      if (stableOrientation_ == oppositeShortSide(lastShortSide_)) {
-        startMode(TimerMode::Work, nowMs, workMinutesForGenre(genre_) * 60UL * 1000UL,
-                  stableOrientation_);
-        transitionTo(State::WorkRunning, nowMs);
-      } else if (stableOrientation_ == OrientationState::LongSide) {
-        startMode(TimerMode::Break, nowMs, kBreakDurationMs, OrientationState::LongSide);
-        transitionTo(State::BreakRunning, nowMs);
-      }
-      break;
-
     case State::BreakRunning:
       if (timerExpired(nowMs)) {
-        completeActiveTimer();
-        resetOrientationStability();
-        transitionTo(State::WaitAfterBreak, nowMs);
-      }
-      break;
-
-    case State::WaitAfterBreak:
-      if (orientationInputArmed(nowMs) && isShortSide(stableOrientation_)) {
-        startMode(TimerMode::Work, nowMs, workMinutesForGenre(genre_) * 60UL * 1000UL,
-                  stableOrientation_);
-        transitionTo(State::WorkRunning, nowMs);
-      }
-      break;
-
-    case State::Cancelled:
-      if (nowMs - feedbackStartedMs_ >= kFeedbackMs) {
-        resetOrientationStability();
-        transitionTo(State::WaitForTouchStart, nowMs);
+        completePhase(nowMs);
       }
       break;
 
     case State::Complete:
-      if (nowMs - feedbackStartedMs_ >= kFeedbackMs) {
-        clearSession();
-        resetOrientationStability();
-        transitionTo(imuAvailable_ ? State::GenreSelect : State::Unavailable, nowMs);
-      }
+    case State::Cancelled:
+      // Transient: App observes these and returns to the preset picker.
       break;
+
+    default:
+      break;
+  }
+
+  applyOrientation(nowMs);
+}
+
+// ----- Preset selection -----
+
+const char *FocusTimer::presetLabel(Preset preset) {
+  switch (preset) {
+    case Preset::Classic:
+      return "Classic";
+    case Preset::Deep:
+      return "Deep";
+    case Preset::Quick:
+      return "Quick";
+    case Preset::Custom:
+      return "Custom";
+    case Preset::None:
+    default:
+      return "";
   }
 }
 
-void FocusTimer::chooseGenre(Genre genre, uint32_t nowMs) {
-  if (genre == Genre::None) {
+void FocusTimer::selectPreset(Preset preset, uint32_t nowMs) {
+  if (preset == Preset::None || static_cast<uint8_t>(preset) >= kPresetCount) {
     return;
   }
-
-  clearSession();
-  genre_ = genre;
-  resetOrientationStability();
-  transitionTo(State::WaitForTouchStart, nowMs);
+  preset_ = preset;
+  cfg_ = presets_[static_cast<uint8_t>(preset)];
+  currentRound_ = 0;
+  completedWorkBlocks_ = 0;
+  completedBreakBlocks_ = 0;
+  selectedField_ = Field::Work;
+  transitionTo(State::Setup, nowMs);
 }
 
-void FocusTimer::advance(uint32_t nowMs) {
-  // Touch-driven equivalent of flipping the device: start, or skip to, the next phase.
-  const uint32_t workMs = workMinutesForGenre(genre_) * 60UL * 1000UL;
+// ----- Setup editing -----
+
+void FocusTimer::selectField(Field field) {
+  if (static_cast<uint8_t>(field) < kFieldCount) {
+    selectedField_ = field;
+  }
+}
+
+void FocusTimer::nextField() {
+  selectedField_ = static_cast<Field>((static_cast<uint8_t>(selectedField_) + 1) % kFieldCount);
+}
+
+void FocusTimer::stepFieldValue(int direction) {
+  if (direction == 0 || state_ != State::Setup) {
+    return;
+  }
+  switch (selectedField_) {
+    case Field::Work:
+      cfg_.workMin = clampStep(cfg_.workMin, direction, kWorkMinStep, kWorkMinMin, kWorkMinMax);
+      break;
+    case Field::Break:
+      cfg_.breakMin = clampStep(cfg_.breakMin, direction, kBreakMinStep, kBreakMinMin, kBreakMinMax);
+      break;
+    case Field::Rounds:
+      cfg_.rounds = static_cast<uint8_t>(
+          clampStep(cfg_.rounds, direction, 1, kRoundsMin, kRoundsMax));
+      break;
+    case Field::LongBreak:
+      cfg_.longBreakMin =
+          clampStep(cfg_.longBreakMin, direction, kLongBreakMinStep, kLongBreakMinMin, kLongBreakMinMax);
+      break;
+    case Field::Begin:
+      break;
+  }
+  // Persist edits back into the in-RAM preset so they survive re-selection.
+  if (static_cast<uint8_t>(preset_) < kPresetCount) {
+    presets_[static_cast<uint8_t>(preset_)] = cfg_;
+  }
+}
+
+void FocusTimer::beginSession(uint32_t nowMs) {
+  if (cfg_.rounds < kRoundsMin) {
+    cfg_.rounds = kRoundsMin;
+  }
+  currentRound_ = 1;
+  completedWorkBlocks_ = 0;
+  completedBreakBlocks_ = 0;
+  startPhase(Phase::Work, nowMs, minutesToMs(cfg_.workMin));
+  transitionTo(State::WorkRunning, nowMs);
+}
+
+// ----- Running controls -----
+
+void FocusTimer::tap(uint32_t nowMs) {
   switch (state_) {
-    case State::WaitForTouchStart:
-      startMode(TimerMode::Touch, nowMs, selectedTouchDurationMs(), OrientationState::ShortSideA);
-      transitionTo(State::TouchRunning, nowMs);
+    case State::Setup:
+      if (selectedField_ == Field::Begin) {
+        beginSession(nowMs);
+      } else {
+        nextField();
+      }
       break;
-    case State::TouchRunning:
-      completeActiveTimer();
-      resetOrientationStability();
-      transitionTo(State::WaitAfterTouch, nowMs);
+    case State::WorkRunning:
+    case State::BreakRunning:
+      pauseTimer(nowMs);
       break;
-    case State::WaitAfterTouch:
-    case State::WaitAfterBreak:
-      startMode(TimerMode::Work, nowMs, workMs, OrientationState::ShortSideB);
+    case State::WorkPaused:
+    case State::BreakPaused:
+      resumeTimer(nowMs);
+      break;
+    case State::WaitWorkStart:
+      ++currentRound_;
+      startPhase(Phase::Work, nowMs, minutesToMs(cfg_.workMin));
       transitionTo(State::WorkRunning, nowMs);
       break;
-    case State::WorkRunning:
-      completeActiveTimer();
-      resetOrientationStability();
-      transitionTo(State::WaitAfterWork, nowMs);
-      break;
-    case State::WaitAfterWork:
-      startMode(TimerMode::Break, nowMs, kBreakDurationMs, OrientationState::LongSide);
-      transitionTo(State::BreakRunning, nowMs);
-      break;
-    case State::BreakRunning:
-      completeActiveTimer();
-      resetOrientationStability();
-      transitionTo(State::WaitAfterBreak, nowMs);
-      break;
-    case State::Cancelled:
     case State::Complete:
-      clearSession();
-      resetOrientationStability();
-      transitionTo(State::WaitForTouchStart, nowMs);
+    case State::Cancelled:
+      // Handled by App (returns to presets).
       break;
     default:
       break;
   }
 }
 
-void FocusTimer::cancelActiveTimer(uint32_t nowMs) {
-  if (!timerRunning_) {
-    return;
+void FocusTimer::swipe(int direction, uint32_t nowMs) {
+  switch (state_) {
+    case State::Setup:
+      stepFieldValue(direction);
+      break;
+    case State::WorkRunning:
+    case State::BreakRunning:
+    case State::WorkPaused:
+    case State::BreakPaused:
+      // Skip the current phase as if it had completed.
+      completePhase(nowMs);
+      break;
+    default:
+      break;
   }
-
-  stopActiveTimer();
-  resetOrientationStability();
-  feedbackStartedMs_ = nowMs;
-  pendingCue_ = Cue::Cancelled;
-  transitionTo(State::Cancelled, nowMs);
 }
 
-void FocusTimer::abandon() {
+void FocusTimer::hold(uint32_t nowMs) {
+  switch (state_) {
+    case State::WorkRunning:
+    case State::BreakRunning:
+    case State::WorkPaused:
+    case State::BreakPaused:
+    case State::WaitWorkStart:
+      cancel(nowMs);
+      break;
+    case State::Setup:
+      abandon(nowMs);
+      break;
+    default:
+      break;
+  }
+}
+
+void FocusTimer::abandon(uint32_t nowMs) {
   clearSession();
   resetOrientationStability();
-  state_ = imuAvailable_ ? State::GenreSelect : State::Unavailable;
-  stateStartedMs_ = millis();
+  state_ = State::PresetSelect;
+  stateStartedMs_ = nowMs;
 }
 
-bool FocusTimer::available() const { return imuAvailable_; }
+// ----- Getters -----
 
-bool FocusTimer::isActiveTimerRunning() const { return timerRunning_; }
+bool FocusTimer::isRunning() const {
+  return state_ == State::WorkRunning || state_ == State::BreakRunning;
+}
 
-FocusTimer::State FocusTimer::state() const { return state_; }
-
-FocusTimer::Genre FocusTimer::genre() const { return genre_; }
-
-BoardConfig::UiOrientation FocusTimer::uiOrientation() const {
-  switch (state_) {
-    case State::GenreSelect:
-    case State::Unavailable:
-    case State::Complete:
-      return BoardConfig::UiOrientation::Landscape;
-
-    case State::WaitForTouchStart:
-    case State::TouchRunning:
-    case State::Cancelled:
-      return portraitOrientationForShortSide(activeStartOrientation_);
-
-    case State::WaitAfterTouch:
-    case State::WorkRunning:
-    case State::WaitAfterBreak:
-      return portraitOrientationForShortSide(lastShortSide_);
-
-    case State::BreakRunning:
-    case State::WaitAfterWork:
-      return BoardConfig::UiOrientation::Landscape;
-
-    default:
-      return BoardConfig::UiOrientation::Portrait;
-  }
+bool FocusTimer::isPaused() const {
+  return state_ == State::WorkPaused || state_ == State::BreakPaused;
 }
 
 uint32_t FocusTimer::remainingMs(uint32_t nowMs) const {
+  if (isPaused()) {
+    return pausedRemainingMs_;
+  }
   if (!timerRunning_) {
     return 0;
   }
-
   const uint32_t elapsed = nowMs - timerStartedMs_;
   return (elapsed >= timerDurationMs_) ? 0 : (timerDurationMs_ - elapsed);
 }
 
 uint8_t FocusTimer::progressPercent(uint32_t nowMs) const {
-  if (!timerRunning_ || timerDurationMs_ == 0) {
+  if (timerDurationMs_ == 0) {
     return 0;
   }
-
-  const uint32_t elapsed = nowMs - timerStartedMs_;
+  uint32_t elapsed;
+  if (isPaused()) {
+    elapsed = timerDurationMs_ - pausedRemainingMs_;
+  } else if (timerRunning_) {
+    elapsed = nowMs - timerStartedMs_;
+  } else {
+    return 0;
+  }
   const uint32_t clamped = (elapsed >= timerDurationMs_) ? timerDurationMs_ : elapsed;
   return static_cast<uint8_t>((clamped * 100U) / timerDurationMs_);
 }
 
-uint8_t FocusTimer::completedTouchBlocks() const { return completedTouchBlocks_; }
+// ----- Per-preset persistence -----
 
-uint8_t FocusTimer::completedWorkBlocks() const { return completedWorkBlocks_; }
+FocusTimer::Config FocusTimer::presetConfig(Preset preset) const {
+  const uint8_t i = static_cast<uint8_t>(preset);
+  return i < kPresetCount ? presets_[i] : defaultConfig(Preset::Classic);
+}
 
-uint8_t FocusTimer::completedBreakBlocks() const { return completedBreakBlocks_; }
+void FocusTimer::setPresetConfig(Preset preset, const Config &cfg) {
+  const uint8_t i = static_cast<uint8_t>(preset);
+  if (i >= kPresetCount) {
+    return;
+  }
+  Config c = cfg;
+  c.workMin = clampStep(c.workMin == 0 ? kWorkMinMin : c.workMin, 0, kWorkMinStep, kWorkMinMin, kWorkMinMax);
+  c.breakMin = clampStep(c.breakMin == 0 ? kBreakMinMin : c.breakMin, 0, kBreakMinStep, kBreakMinMin, kBreakMinMax);
+  if (c.rounds < kRoundsMin) c.rounds = kRoundsMin;
+  if (c.rounds > kRoundsMax) c.rounds = kRoundsMax;
+  c.longBreakMin = clampStep(c.longBreakMin == 0 ? kLongBreakMinMin : c.longBreakMin, 0,
+                             kLongBreakMinStep, kLongBreakMinMin, kLongBreakMinMax);
+  presets_[i] = c;
+}
 
 FocusTimer::Cue FocusTimer::consumeCue() {
   const Cue cue = pendingCue_;
@@ -309,208 +305,182 @@ FocusTimer::Cue FocusTimer::consumeCue() {
   return cue;
 }
 
-bool FocusTimer::consumeCompletionCue() {
-  return consumeCue() != Cue::None;
+// ----- Timer mechanics -----
+
+void FocusTimer::startPhase(Phase phase, uint32_t nowMs, uint32_t durationMs) {
+  phase_ = phase;
+  timerStartedMs_ = nowMs;
+  timerDurationMs_ = durationMs;
+  timerRunning_ = true;
+  pausedRemainingMs_ = 0;
+  pendingCue_ = Cue::Start;
 }
 
-uint8_t FocusTimer::workMinutesForGenre(Genre genre) {
-  switch (genre) {
-    case Genre::Chores:
-      return 15;
-    case Genre::RsvpNano:  // "Work"
-      return 25;
-    case Genre::StrengthLabs:  // "Fitness"
-      return 45;
-    case Genre::SelfCare:
-      return 10;
-    case Genre::Other:
-      return 20;
-    default:
-      return 20;
+void FocusTimer::pauseTimer(uint32_t nowMs) {
+  if (!timerRunning_) {
+    return;
   }
+  pausedRemainingMs_ = remainingMs(nowMs);
+  timerRunning_ = false;
+  pendingCue_ = Cue::Pause;
+  transitionTo(phase_ == Phase::Work ? State::WorkPaused : State::BreakPaused, nowMs);
 }
 
-void FocusTimer::cycleTouchDuration() {
-  uint8_t &idx = touchDurationByGenre_[genreIdx()];
-  idx = static_cast<uint8_t>((idx + 1) % kTouchDurationCount);
-}
-
-void FocusTimer::stepTouchDuration(int direction) {
-  uint8_t &idx = touchDurationByGenre_[genreIdx()];
-  if (direction > 0 && idx < kTouchDurationCount - 1) {
-    ++idx;
-  } else if (direction < 0 && idx > 0) {
-    --idx;
+void FocusTimer::resumeTimer(uint32_t nowMs) {
+  if (pausedRemainingMs_ == 0) {
+    pausedRemainingMs_ = minutesToMs(phase_ == Phase::Work ? cfg_.workMin : cfg_.breakMin);
   }
+  timerStartedMs_ = nowMs;
+  timerDurationMs_ = pausedRemainingMs_;
+  timerRunning_ = true;
+  pausedRemainingMs_ = 0;
+  pendingCue_ = Cue::Resume;
+  transitionTo(phase_ == Phase::Work ? State::WorkRunning : State::BreakRunning, nowMs);
 }
 
-void FocusTimer::setTouchDurationIndexForGenre(Genre genre, uint8_t index) {
-  const uint8_t g = static_cast<uint8_t>(genre);
-  if (g < kGenreCount && index < kTouchDurationCount) {
-    touchDurationByGenre_[g] = index;
-  }
-}
+void FocusTimer::completePhase(uint32_t nowMs) {
+  const Phase finished = phase_;
+  timerRunning_ = false;
+  pausedRemainingMs_ = 0;
 
-uint8_t FocusTimer::touchDurationIndexForGenre(Genre genre) const {
-  const uint8_t g = static_cast<uint8_t>(genre);
-  return g < kGenreCount ? touchDurationByGenre_[g] : 0;
-}
-
-uint8_t FocusTimer::touchDurationIndex() const { return touchDurationByGenre_[genreIdx()]; }
-
-uint32_t FocusTimer::selectedTouchDurationMs() const {
-  return kTouchDurations[touchDurationByGenre_[genreIdx()]];
-}
-
-uint8_t FocusTimer::genreIdx() const {
-  const uint8_t idx = static_cast<uint8_t>(genre_);
-  return idx < kGenreCount ? idx : 0;
-}
-
-const char *FocusTimer::genreLabel(Genre genre) {
-  switch (genre) {
-    case Genre::Chores:
-      return "Chores";
-    case Genre::RsvpNano:
-      return "Work";
-    case Genre::StrengthLabs:
-      return "Fitness";
-    case Genre::SelfCare:
-      return "Self Care";
-    case Genre::Other:
-      return "Other";
-    case Genre::None:
-    default:
-      return "";
-  }
-}
-
-bool FocusTimer::initImu() {
-  if (imuAvailable_) {
-    return true;
-  }
-
-  IMU_WIRE.beginTransmission(kImuAddress);
-  if (IMU_WIRE.endTransmission(true) != 0) {
-    imuAvailable_ = false;
-    return false;
-  }
-
-  if (!writeRegister(kImuResetReg, kImuResetValue)) {
-    imuAvailable_ = false;
-    return false;
-  }
-
-  const uint32_t waitStartedMs = millis();
-  uint8_t resetResult = 0;
-  bool resetReady = false;
-  while (millis() - waitStartedMs < 500) {
-    if (readRegister(kImuResetResultReg, resetResult) &&
-        resetResult == kImuResetResultValue) {
-      resetReady = true;
-      break;
+  if (finished == Phase::Work) {
+    ++completedWorkBlocks_;
+    // Breaks auto-start. Last round earns the long break.
+    if (currentRound_ >= cfg_.rounds) {
+      startPhase(Phase::LongBreak, nowMs, minutesToMs(cfg_.longBreakMin));
+    } else {
+      startPhase(Phase::ShortBreak, nowMs, minutesToMs(cfg_.breakMin));
     }
-    delay(10);
+    pendingCue_ = Cue::WorkComplete;  // override the Start cue startPhase set
+    transitionTo(State::BreakRunning, nowMs);
+    return;
   }
 
-  if (!resetReady) {
-    imuAvailable_ = false;
-    return false;
+  // A break finished.
+  ++completedBreakBlocks_;
+  if (finished == Phase::LongBreak) {
+    phase_ = Phase::None;
+    pendingCue_ = Cue::SessionComplete;
+    transitionTo(State::Complete, nowMs);
+  } else {
+    phase_ = Phase::None;
+    pendingCue_ = Cue::BreakComplete;
+    transitionTo(State::WaitWorkStart, nowMs);
   }
-
-  uint8_t whoAmI = 0;
-  if (!readRegister(kImuWhoAmIReg, whoAmI) || whoAmI != kImuWhoAmIValue) {
-    imuAvailable_ = false;
-    return false;
-  }
-
-  if (!updateRegister(kImuCtrl1Reg, 0x40, 0x40) ||
-      !writeRegister(kImuCtrl8Reg, 0x80) ||
-      !writeRegister(kImuCtrl2Reg, 0x16) ||
-      !updateRegister(kImuCtrl5Reg, 0x07, 0x07) ||
-      !updateRegister(kImuCtrl7Reg, 0x01, 0x01)) {
-    imuAvailable_ = false;
-    return false;
-  }
-
-  accelScale_ = 4.0f / 32768.0f;
-  resetOrientationStability();
-  imuAvailable_ = true;
-  return true;
 }
 
-bool FocusTimer::readRegister(uint8_t reg, uint8_t &value) {
-  IMU_WIRE.beginTransmission(kImuAddress);
-  IMU_WIRE.write(reg);
-  if (IMU_WIRE.endTransmission(false) != 0) {
-    return false;
-  }
-
-  if (IMU_WIRE.requestFrom(static_cast<int>(kImuAddress), 1, 1) != 1) {
-    return false;
-  }
-
-  value = IMU_WIRE.read();
-  return true;
+void FocusTimer::cancel(uint32_t nowMs) {
+  timerRunning_ = false;
+  pausedRemainingMs_ = 0;
+  phase_ = Phase::None;
+  pendingCue_ = Cue::Cancelled;
+  transitionTo(State::Cancelled, nowMs);
 }
 
-bool FocusTimer::writeRegister(uint8_t reg, uint8_t value) {
-  IMU_WIRE.beginTransmission(kImuAddress);
-  IMU_WIRE.write(reg);
-  IMU_WIRE.write(value);
-  return IMU_WIRE.endTransmission(true) == 0;
+void FocusTimer::clearSession() {
+  phase_ = Phase::None;
+  currentRound_ = 0;
+  completedWorkBlocks_ = 0;
+  completedBreakBlocks_ = 0;
+  timerStartedMs_ = 0;
+  timerDurationMs_ = 0;
+  pausedRemainingMs_ = 0;
+  timerRunning_ = false;
+  pendingCue_ = Cue::None;
+  // preset_ / cfg_ / presets_ intentionally preserved.
 }
 
-bool FocusTimer::readRegisters(uint8_t startReg, uint8_t *buffer, size_t len) {
-  if (buffer == nullptr || len == 0 || len > 32) {
-    return false;
-  }
-
-  IMU_WIRE.beginTransmission(kImuAddress);
-  IMU_WIRE.write(startReg);
-  if (IMU_WIRE.endTransmission(false) != 0) {
-    return false;
-  }
-
-  if (IMU_WIRE.requestFrom(static_cast<int>(kImuAddress), static_cast<int>(len), 1) !=
-      static_cast<int>(len)) {
-    return false;
-  }
-
-  for (size_t i = 0; i < len; ++i) {
-    buffer[i] = IMU_WIRE.read();
-  }
-  return true;
+void FocusTimer::transitionTo(State next, uint32_t nowMs) {
+  state_ = next;
+  stateStartedMs_ = nowMs;
 }
 
-bool FocusTimer::updateRegister(uint8_t reg, uint8_t mask, uint8_t value) {
-  uint8_t current = 0;
-  if (!readRegister(reg, current)) {
-    return false;
-  }
-
-  current = static_cast<uint8_t>((current & static_cast<uint8_t>(~mask)) | (value & mask));
-  return writeRegister(reg, current);
+bool FocusTimer::timerExpired(uint32_t nowMs) const {
+  return timerRunning_ && (nowMs - timerStartedMs_ >= timerDurationMs_);
 }
 
-bool FocusTimer::readAccelerometer(float &x, float &y, float &z) {
-  uint8_t buffer[6] = {0};
-  if (!readRegisters(kImuAccelStartReg, buffer, sizeof(buffer))) {
-    return false;
+uint32_t FocusTimer::minutesToMs(uint16_t minutes) {
+  return static_cast<uint32_t>(minutes) * 60UL * 1000UL;
+}
+
+FocusTimer::Config FocusTimer::defaultConfig(Preset preset) {
+  switch (preset) {
+    case Preset::Classic:
+      return Config{25, 5, 4, 15};
+    case Preset::Deep:
+      return Config{50, 10, 3, 20};
+    case Preset::Quick:
+      return Config{15, 3, 4, 15};
+    case Preset::Custom:
+      return Config{30, 5, 4, 20};
+    default:
+      return Config{25, 5, 4, 15};
+  }
+}
+
+uint8_t FocusTimer::presetIdx() const {
+  const uint8_t i = static_cast<uint8_t>(preset_);
+  return i < kPresetCount ? i : 0;
+}
+
+// ----- Orientation layer -----
+
+void FocusTimer::applyOrientation(uint32_t nowMs) {
+  if (!imuAvailable() || !orientationArmed(nowMs)) {
+    return;
   }
 
-  const int16_t rawX = static_cast<int16_t>((buffer[1] << 8) | buffer[0]);
-  const int16_t rawY = static_cast<int16_t>((buffer[3] << 8) | buffer[2]);
-  const int16_t rawZ = static_cast<int16_t>((buffer[5] << 8) | buffer[4]);
-
-  x = rawX * accelScale_;
-  y = rawY * accelScale_;
-  z = rawZ * accelScale_;
-  return true;
+  switch (state_) {
+    case State::WorkRunning:
+    case State::BreakRunning:
+      // Lay the device flat (face down on a desk) to pause and step away.
+      if (stableOrientation_ == OrientationState::Flat) {
+        pauseTimer(nowMs);
+      }
+      break;
+    case State::WorkPaused:
+    case State::BreakPaused:
+      // Stand it back up on a short edge to resume.
+      if (stableOrientation_ == OrientationState::Edge) {
+        resumeTimer(nowMs);
+      }
+      break;
+    case State::WaitWorkStart:
+      // Stand on a short edge to start the next work block.
+      if (stableOrientation_ == OrientationState::Edge) {
+        ++currentRound_;
+        startPhase(Phase::Work, nowMs, minutesToMs(cfg_.workMin));
+        transitionTo(State::WorkRunning, nowMs);
+      }
+      break;
+    default:
+      break;
+  }
 }
+
+bool FocusTimer::orientationArmed(uint32_t nowMs) const {
+  return (nowMs - stateStartedMs_) >= kOrientationGraceMs;
+}
+
+FocusTimer::OrientationState FocusTimer::classify(float x, float y, float z) const {
+  if (fabsf(z) >= kFlatAxisThreshold && fabsf(x) <= 0.30f && fabsf(y) <= 0.30f) {
+    return OrientationState::Flat;
+  }
+  if (fabsf(x) >= kSideAxisThreshold && fabsf(y) <= kCrossAxisLimit &&
+      fabsf(z) <= kCrossAxisLimit) {
+    return OrientationState::Edge;  // standing on a short side (either end)
+  }
+  if (fabsf(y) >= kSideAxisThreshold && fabsf(x) <= kCrossAxisLimit &&
+      fabsf(z) <= kCrossAxisLimit) {
+    return OrientationState::Other;  // long side upright
+  }
+  return OrientationState::Other;
+}
+
+// ----- Orientation (reads the shared MotionSensor) -----
 
 void FocusTimer::updateOrientation(uint32_t nowMs) {
-  if (!imuAvailable_) {
+  if (!imuAvailable()) {
     rawOrientation_ = OrientationState::Unknown;
     stableOrientation_ = OrientationState::Unknown;
     return;
@@ -519,7 +489,7 @@ void FocusTimer::updateOrientation(uint32_t nowMs) {
   float x = 0.0f;
   float y = 0.0f;
   float z = 0.0f;
-  if (!readAccelerometer(x, y, z)) {
+  if (!motion_->readAccel(x, y, z)) {
     return;
   }
 
@@ -529,7 +499,6 @@ void FocusTimer::updateOrientation(uint32_t nowMs) {
     candidateSinceMs_ = nowMs;
     return;
   }
-
   if ((nowMs - candidateSinceMs_) >= kOrientationStableMs) {
     stableOrientation_ = candidateOrientation_;
   }
@@ -540,143 +509,4 @@ void FocusTimer::resetOrientationStability() {
   stableOrientation_ = OrientationState::Unknown;
   candidateOrientation_ = OrientationState::Unknown;
   candidateSinceMs_ = 0;
-}
-
-FocusTimer::OrientationState FocusTimer::classify(float x, float y, float z) const {
-  if (fabsf(z) >= kFlatAxisThreshold && fabsf(x) <= 0.30f && fabsf(y) <= 0.30f) {
-    return OrientationState::FlatBack;
-  }
-
-  if (x >= kSideAxisThreshold && fabsf(y) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::ShortSideA;
-  }
-
-  if (x <= -kSideAxisThreshold && fabsf(y) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::ShortSideB;
-  }
-
-  if (fabsf(y) >= kSideAxisThreshold && fabsf(x) <= kCrossAxisLimit &&
-      fabsf(z) <= kCrossAxisLimit) {
-    return OrientationState::LongSide;
-  }
-
-  return OrientationState::Unknown;
-}
-
-bool FocusTimer::orientationInputArmed(uint32_t nowMs) const {
-  switch (state_) {
-    case State::WaitForTouchStart:
-      return (nowMs - stateStartedMs_) >= kTouchStartArmDelayMs;
-    case State::WaitAfterTouch:
-    case State::WaitAfterWork:
-    case State::WaitAfterBreak:
-      return (nowMs - stateStartedMs_) >= kPostTimerFlipGraceMs;
-    default:
-      return true;
-  }
-}
-
-void FocusTimer::transitionTo(State nextState, uint32_t nowMs) {
-  state_ = nextState;
-  stateStartedMs_ = nowMs;
-}
-
-void FocusTimer::clearSession() {
-  genre_ = Genre::None;
-  activeMode_ = TimerMode::None;
-  activeStartOrientation_ = OrientationState::Unknown;
-  lastShortSide_ = OrientationState::Unknown;
-  timerStartedMs_ = 0;
-  timerDurationMs_ = 0;
-  timerRunning_ = false;
-  feedbackStartedMs_ = 0;
-  pendingCue_ = Cue::None;
-  completedTouchBlocks_ = 0;
-  completedWorkBlocks_ = 0;
-  completedBreakBlocks_ = 0;
-  // touchDurationByGenre_ is intentionally preserved across sessions
-}
-
-void FocusTimer::startMode(TimerMode mode, uint32_t nowMs, uint32_t durationMs,
-                           OrientationState startOrientation) {
-  activeMode_ = mode;
-  activeStartOrientation_ = startOrientation;
-  timerStartedMs_ = nowMs;
-  timerDurationMs_ = durationMs;
-  timerRunning_ = true;
-  pendingCue_ = Cue::Start;
-
-  if (isShortSide(startOrientation)) {
-    lastShortSide_ = startOrientation;
-  }
-}
-
-void FocusTimer::stopActiveTimer() {
-  timerRunning_ = false;
-  activeMode_ = TimerMode::None;
-  activeStartOrientation_ = OrientationState::Unknown;
-  timerStartedMs_ = 0;
-  timerDurationMs_ = 0;
-  lastShortSide_ = OrientationState::Unknown;
-}
-
-void FocusTimer::completeActiveTimer() {
-  if (!timerRunning_) {
-    return;
-  }
-
-  Cue cue = Cue::None;
-  switch (activeMode_) {
-    case TimerMode::Touch:
-      ++completedTouchBlocks_;
-      cue = Cue::TouchComplete;
-      break;
-    case TimerMode::Work:
-      ++completedWorkBlocks_;
-      cue = Cue::WorkComplete;
-      break;
-    case TimerMode::Break:
-      ++completedBreakBlocks_;
-      cue = Cue::BreakComplete;
-      break;
-    case TimerMode::None:
-    default:
-      break;
-  }
-
-  timerRunning_ = false;
-  activeMode_ = TimerMode::None;
-  activeStartOrientation_ = OrientationState::Unknown;
-  timerStartedMs_ = 0;
-  timerDurationMs_ = 0;
-  pendingCue_ = cue;
-}
-
-bool FocusTimer::timerExpired(uint32_t nowMs) const {
-  return timerRunning_ && (nowMs - timerStartedMs_ >= timerDurationMs_);
-}
-
-bool FocusTimer::isShortSide(OrientationState orientation) {
-  return orientation == OrientationState::ShortSideA ||
-         orientation == OrientationState::ShortSideB;
-}
-
-FocusTimer::OrientationState FocusTimer::oppositeShortSide(
-    OrientationState orientation) {
-  switch (orientation) {
-    case OrientationState::ShortSideA:
-      return OrientationState::ShortSideB;
-    case OrientationState::ShortSideB:
-      return OrientationState::ShortSideA;
-    default:
-      return OrientationState::Unknown;
-  }
-}
-
-BoardConfig::UiOrientation FocusTimer::portraitOrientationForShortSide(
-    OrientationState orientation) {
-  return orientation == OrientationState::ShortSideB ? BoardConfig::UiOrientation::PortraitFlipped
-                                                     : BoardConfig::UiOrientation::Portrait;
 }

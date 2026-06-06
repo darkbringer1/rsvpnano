@@ -11,6 +11,16 @@ enum class UiOrientation : uint8_t {
   PortraitFlipped,
 };
 
+// App-wide 180 auto-rotate calibration (QMI8658 accelerometer).
+// Only a 180 flip is ever applied (Landscape <-> LandscapeFlipped), so we look
+// at a single in-screen axis whose sign distinguishes upright from upside-down.
+// These are TUNED ON DEVICE: read the throttled "[orient]" console log while
+// holding the device upright vs flipped, then set axis/sign so the decision is
+// correct. IMU_FLIP_THRESHOLD is the hysteresis half-band in g.
+constexpr uint8_t IMU_FLIP_AXIS = 1;            // 0=x, 1=y, 2=z (upright: y ~= -0.9g)
+constexpr float IMU_FLIP_UPRIGHT_SIGN = -1.0f;  // sign of that axis when upright
+constexpr float IMU_FLIP_THRESHOLD = 0.40f;     // g
+
 #if defined(BOARD_AMOLED_18)
 // Waveshare ESP32-S3-Touch-AMOLED-1.8 (SH8601 368x448 QSPI, FT3168 touch).
 constexpr int PIN_BOOT_BUTTON = 0;
