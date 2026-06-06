@@ -11,6 +11,12 @@
 #include "app/Localization.h"
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
+#include "app/ClockController.h"
+#include "app/OtaController.h"
+#include "book/BookLibraryStore.h"
+#include "app/TextEntryController.h"
+#include "display/StandbyScreensaver.h"
+#include "reader/TimeEstimateEngine.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
 #include "reader/ReadingLoop.h"
@@ -42,23 +48,6 @@ class App {
   void setBootReason(int resetReason, int wakeCause);
 
  private:
-  static constexpr size_t kOtaVersionLabelMax = 32;
-  static constexpr size_t kOtaSummaryLabelMax = 40;
-  static constexpr size_t kOtaDetailLabelMax = 96;
-
-  struct OtaCheckResult {
-    OtaUpdater::ResultCode code = OtaUpdater::ResultCode::MetadataFailed;
-    char currentVersion[kOtaVersionLabelMax] = {};
-    char latestVersion[kOtaVersionLabelMax] = {};
-    char summary[kOtaSummaryLabelMax] = {};
-    char detail[kOtaDetailLabelMax] = {};
-  };
-
-  struct OtaCheckTaskParams {
-    OtaUpdater::Config config;
-    QueueHandle_t resultQueue = nullptr;
-  };
-
   struct PausedTouchSession {
     bool active = false;
     uint16_t startX = 0;
@@ -114,67 +103,15 @@ class App {
     Voltage = 2,
   };
 
-  enum class ScreensaverMode : uint8_t {
-    Life = 0,
-    Maze = 2,
-    Voronoi = 3,
-    ScreenOff = 6,
-  };
-
   enum class PauseMode : uint8_t {
     SentenceEnd = 0,
     Instant = 1,
-  };
-
-  enum class TextEntryPurpose : uint8_t {
-    None,
-    WifiPassword,
-  };
-
-  enum class KeyboardMode : uint8_t {
-    Lower,
-    Upper,
-    Symbols,
-  };
-
-  enum class TextEntryAction : uint8_t {
-    Insert,
-    SetLower,
-    SetUpper,
-    SetSymbols,
-    Space,
-    Backspace,
-    Clear,
-    ToggleMask,
-    Save,
-    Cancel,
   };
 
   struct WifiNetworkInfo {
     String ssid;
     int32_t rssi = 0;
     uint8_t authMode = 0;
-  };
-
-  struct TextEntryButton {
-    DisplayManager::Button view;
-    TextEntryAction action = TextEntryAction::Insert;
-    String payload;
-  };
-
-  struct TextEntrySession {
-    bool active = false;
-    TextEntryPurpose purpose = TextEntryPurpose::None;
-    KeyboardMode mode = KeyboardMode::Lower;
-    MenuScreen returnScreen = MenuScreen::Main;
-    String title;
-    String prompt;
-    String helperText;
-    String value;
-    String contextValue;
-    size_t maxLength = 63;
-    bool masked = false;
-    bool revealValue = false;
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -263,32 +200,19 @@ class App {
   void rebuildSettingsMenuItems();
   void applyPacingSettings();
   void maybeAutoCheckForUpdates(uint32_t nowMs);
-  bool startBackgroundOtaCheck(const OtaUpdater::Config &config);
-  static void otaCheckTask(void *params);
-  void pollOtaCheckResult(uint32_t nowMs);
   void maybeOpenUpdateConfirm(uint32_t nowMs);
   bool updateConfirmCanOpen() const;
-  bool blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs);
-  void runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs);
   void runRssFeedCheck(uint32_t nowMs);
   OtaUpdater::Config preferredOtaConfig();
   void scanWifiNetworks();
   void renderWifiNetworks();
   void selectWifiNetworkItem(uint32_t nowMs);
-  void openTextEntry(TextEntryPurpose purpose, const String &title, const String &prompt,
-                     const String &helperText, const String &initialValue,
-                     const String &contextValue, bool masked, size_t maxLength,
-                     MenuScreen returnScreen);
-  void rebuildTextEntryButtons();
-  void renderTextEntry();
-  bool handleTextEntryTap(uint16_t x, uint16_t y, uint32_t nowMs);
-  void activateTextEntryButton(size_t buttonIndex, uint32_t nowMs);
-  void commitTextEntry(uint32_t nowMs);
+  void openWifiPasswordEntry(const String &ssid, const String &initialValue);
+  void submitWifiPassword(uint32_t nowMs);
   String configuredWifiSsid();
   bool otaAutoCheckEnabled();
   String pacingDelayLabel(uint16_t delayMs) const;
   String firmwareUpdateMenuLabel() const;
-  String firmwareVersionLabel() const;
   String themeModeLabel() const;
   String phantomWordsLabel() const;
   String focusHighlightLabel() const;
@@ -332,17 +256,6 @@ class App {
   void updateDeepStandbyIdle(uint32_t nowMs);
   String deepStandbyDelayLabel() const;
 #endif
-  void seedStandbyScreensaver(uint32_t nowMs);
-  void stepStandbyScreensaver(uint32_t nowMs);
-  void seedStandbyLife(uint32_t nowMs);
-  void stepStandbyLife();
-  void seedStandbyMaze(uint32_t nowMs);
-  void stepStandbyMaze();
-  void seedStandbyVoronoi(uint32_t nowMs);
-  void stepStandbyVoronoi();
-  void renderStandbyVoronoi();
-  void seedStandbyScreenOff(uint32_t nowMs);
-  void updateStandbyScreensaver(uint32_t nowMs, bool force = false);
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
@@ -353,20 +266,9 @@ class App {
   bool loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPositionFallback = false,
                        bool allowIndexBuild = true, bool allowEpubConversion = true,
                        bool rebuildTimeEstimate = true);
-  String bookPositionKey(const String &bookPath) const;
-  String bookWordCountKey(const String &bookPath) const;
-  String bookRecentKey(const String &bookPath) const;
-  String bookFinishedKey(const String &bookPath) const;
-  uint32_t nextRecentSequence();
-  uint32_t bookRecentSequence(const String &bookPath);
-  void markBookRecent(const String &bookPath);
-  void setBookFinished(const String &bookPath, bool finished);
-  bool bookIsFinished(const String &bookPath);
   void enterBookFinished(uint32_t nowMs);
   void renderBookFinished();
-  uint32_t savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback = false);
   bool bookProgressPercent(size_t bookIndex, uint8_t &percent);
-  int findBookIndexByPath(const String &path) const;
   void renderMenu();
   void renderMainMenu();
   void renderSettings();
@@ -381,11 +283,6 @@ class App {
   void saveLifetimeStats();
   // Reading streak (consecutive days), driven by the PCF85063 RTC.
   void updateStreakForToday();
-  void syncClockFromNetwork(uint32_t nowMs);  // NTP -> RTC over Wi-Fi
-  bool localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const;
-  bool fetchTimezoneOffsetMinutes(int &outMinutes);  // geo-IP lookup
-  void writeLocalToRtc(const BoardConfig::RtcDateTime &local);  // local -> UTC -> RTC
-  String timezoneLabel() const;
   // Settings > Clock submenu.
   void openClockSettings();
   void selectClockSettingsItem(uint32_t nowMs);
@@ -412,19 +309,9 @@ class App {
   String currentBatteryLabel() const;
   String footerMetricModeLabel() const;
   String batteryLabelModeLabel() const;
-  String screensaverModeLabel() const;
   String batteryTimeRemainingLabel() const;
   String batteryVoltageLabel() const;
   String formatBatteryTimeRemaining(uint32_t minutes) const;
-  uint32_t estimatedReadingTimeRemainingMs(size_t startIndex, size_t endIndex) const;
-  uint32_t estimatedPacingBonusMs(size_t startIndex, size_t endIndex) const;
-  void rebuildTimeEstimateCache();
-  void invalidateTimeEstimateCache();
-  void flushPendingTimeEstimateRebuild();
-  void cancelTimeEstimateBuild();
-  void updateTimeEstimateBuild(uint32_t nowMs);
-  bool timeEstimateBuildMatchesCurrentBook() const;
-  String formatReadingTimeRemaining(uint32_t remainingMs) const;
   String timeEstimateModeLabel() const;
   uint8_t readingProgressPercent() const;
   bool ensureCurrentBookWordAvailable(uint32_t nowMs);
@@ -475,13 +362,18 @@ class App {
   ButtonHandler button_;
   ButtonHandler powerButton_;
   TouchHandler touch_;
+  StandbyScreensaver screensaver_;
+  TextEntryController textEntry_;
   StorageManager storage_;
   IndexedBookStore activeBookStore_;
-  OtaUpdater otaUpdater_;
   RssFeedManager rssFeedManager_;
   CompanionSyncManager companionSync_;
   UsbMassStorageManager usbTransfer_;
   Preferences preferences_;
+  ClockController clock_;
+  OtaController ota_;
+  TimeEstimateEngine timeEstimate_;
+  BookLibraryStore library_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
@@ -501,9 +393,6 @@ class App {
   uint32_t standbyEnteredMs_ = 0;
   uint32_t powerSaveEnteredMs_ = 0;
   uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; PWR-tap deep standby auto-enter.
-  uint32_t lastStandbyFrameMs_ = 0;
-  uint32_t standbyLifeGeneration_ = 0;
-  uint32_t standbyScreensaverRng_ = 1;
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
@@ -520,8 +409,6 @@ class App {
   // Reading streak: consecutive calendar days with reading (needs a valid RTC).
   uint32_t streakDays_ = 0;
   int32_t streakLastDay_ = 0;  // day-number of the last reading day (0 = none)
-  int timezoneOffsetMinutes_ = 0;  // RTC holds UTC; this offset is applied on read
-  BoardConfig::RtcDateTime clockEdit_;  // in-progress manual clock edit (local time)
   std::vector<String> readingStatsItems_;
   size_t readingStatsSelectedIndex_ = 0;
   size_t contextPreviewStartIndex_ = 0;
@@ -547,9 +434,9 @@ class App {
   size_t typographyTuningSelectedIndex_ = 1;
   size_t typographyPreviewSampleIndex_ = 0;
   MenuScreen menuScreen_ = MenuScreen::Main;
+  MenuScreen textEntryReturnScreen_ = MenuScreen::Main;
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
   MenuScreen powerOffConfirmReturnScreen_ = MenuScreen::Main;
-  QueueHandle_t otaCheckQueue_ = nullptr;
   std::vector<String> settingsMenuItems_;
   std::vector<String> focusTimerGenreMenuItems_;
   std::vector<DisplayManager::LibraryItem> wifiNetworkMenuItems_;
@@ -558,42 +445,17 @@ class App {
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
-  std::vector<uint32_t> wordBonusBlockPrefixSumMs_;
-  String timeEstimateBuildBookPath_;
-  size_t timeEstimateBuildWordCount_ = 0;
-  size_t timeEstimateBuildBlockCount_ = 0;
-  size_t timeEstimateBuildNextBlock_ = 0;
-  uint32_t timeEstimateBuildRunningMs_ = 0;
-  uint32_t timeEstimateBuildStartedMs_ = 0;
-  uint32_t timeEstimateBuildLastLogMs_ = 0;
-  bool timeEstimateCacheValid_ = false;
-  bool timeEstimateBuildInProgress_ = false;
-  bool accurateTimeEstimateEnabled_ = true;
-  bool pacingCacheDirty_ = false;
   std::vector<DisplayManager::ContextWord> contextPreviewWords_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
-  std::vector<TextEntryButton> textEntryButtons_;
-  std::vector<uint32_t> standbyLifeCells_;
-  std::vector<uint32_t> standbyLifeNextCells_;
-  std::vector<uint32_t> standbyScreensaverDimCells_;
-  std::vector<uint8_t> standbyMazeVisited_;
-  std::vector<uint16_t> standbyMazeStack_;
-  std::vector<int16_t> standbyVoronoiX_;
-  std::vector<int16_t> standbyVoronoiY_;
-  std::vector<int16_t> standbyVoronoiDx_;
-  std::vector<int16_t> standbyVoronoiDy_;
   String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash
   String currentBookPath_;
   String currentBookTitle_;
-  String pendingUpdateCurrentVersion_;
-  String pendingUpdateNewVersion_;
   String batteryLabel_;
   float batteryFilteredVoltage_ = 0.0f;
   float batteryFilteredPercent_ = 0.0f;
   uint8_t batteryDisplayedPercent_ = 0;
   uint8_t batteryRuntimeAnchorPercent_ = 0;
   uint32_t batteryRuntimeMinutesRemaining_ = 0;
-  TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
   uint32_t lastMenuTapMs_ = 0;
@@ -614,12 +476,9 @@ class App {
   bool standbyComboActive_ = false;
   bool standbyComboHandled_ = false;
   bool standbyButtonsReleased_ = false;
-  bool standbyScreenOffActive_ = false;
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
-  bool otaCheckInProgress_ = false;
-  bool otaUpdatePromptPending_ = false;
   bool contextViewVisible_ = false;
   bool contextPreviewWindowValid_ = false;
   bool wpmFeedbackVisible_ = false;
@@ -648,7 +507,6 @@ class App {
   bool chapterLabelEnabled_ = true;
   FooterMetricMode footerMetricMode_ = FooterMetricMode::Percentage;
   BatteryLabelMode batteryLabelMode_ = BatteryLabelMode::Percent;
-  ScreensaverMode screensaverMode_ = ScreensaverMode::Life;
   PauseMode pauseMode_ = PauseMode::SentenceEnd;
   bool darkMode_ = true;
   bool nightMode_ = false;

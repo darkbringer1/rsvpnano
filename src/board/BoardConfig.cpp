@@ -443,7 +443,17 @@ PowerKeyEvent pmuPollPowerKey() {
   } else if (gPmu.isPekeyShortPressIrq()) {
     event = PowerKeyEvent::ShortPress;
   }
-  gPmu.clearIrqStatus();
+  // clearIrqStatus() writes 0xFF to every INTSTS reg (write-1-to-clear), wiping
+  // ALL pending bits, not just the ones we read above. The AXP2101 latches the
+  // PWRKEY short-press IRQ on key *release*; if that release lands in the window
+  // between getIrqStatus() and this clear, an unconditional clear would erase the
+  // freshly-set bit before it is ever observed -> the wake tap is silently lost.
+  // Only short/long PKEY IRQs are enabled, so on an idle poll there is nothing to
+  // clear; skip it and let any bit set in the race window survive to the next
+  // poll, where it gets read and handled.
+  if (event != PowerKeyEvent::None) {
+    gPmu.clearIrqStatus();
+  }
   return event;
 #else
   return PowerKeyEvent::None;

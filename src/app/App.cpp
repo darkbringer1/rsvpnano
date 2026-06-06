@@ -23,7 +23,6 @@
 #endif
 
 static const char *kAppTag = "app";
-constexpr uint32_t kOtaCheckTaskStackBytes = 10240;
 constexpr uint32_t kBootSplashMs = 750;
 constexpr uint32_t kWpmFeedbackMs = 900;
 constexpr uint32_t kBrightnessToastMs = 1500;
@@ -57,9 +56,6 @@ constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
 constexpr uint32_t kProgressSaveIntervalMs = 15000;
 constexpr uint32_t kUsbTransferExitHoldMs = 1200;
-constexpr size_t kTimeEstimateBlockWords = 256;
-constexpr size_t kTimeEstimateBlocksPerUpdate = 1;
-constexpr uint32_t kTimeEstimateProgressLogMs = 5000;
 constexpr uint32_t kNominalBatteryRuntimeMinutes = 450;  // ~7.5h with CPU frequency scaling (Balanced)
 constexpr uint8_t kBatteryDisplayHysteresisPercent = 2;
 constexpr uint8_t kBatteryRuntimeMinDropPercent = 3;
@@ -80,10 +76,6 @@ constexpr uint32_t kStandbyWakeGraceMs = 900;
 // it auto-enters after this much inactivity from Paused/Menu and wakes on any
 // touch or BOOT press.
 constexpr uint32_t kIdleStandbyTimeoutMs = 3UL * 60UL * 1000UL;  // 3 minutes
-constexpr uint32_t kStandbyFrameMs = 160;
-constexpr uint16_t kStandbyLifeCellPixels = 2;
-constexpr uint16_t kStandbyLifeColumns = BoardConfig::DISPLAY_WIDTH / kStandbyLifeCellPixels;
-constexpr uint16_t kStandbyLifeRows = BoardConfig::DISPLAY_HEIGHT / kStandbyLifeCellPixels;
 constexpr uint32_t kChapterTransitionMs = 1400;
 constexpr uint32_t kBatteryLabelRefreshIntervalMs = 60000;  // re-display runtime every 60s
 constexpr uint8_t kBrightnessLevels[] = {40, 55, 70, 85, 100};
@@ -228,7 +220,6 @@ constexpr size_t kFocusTimerGenreBackIndex = 0;
 constexpr size_t kFocusTimerGenreFirstIndex = 1;
 constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
-constexpr const char *kPrefLegacyWordIndex = "word";
 constexpr const char *kPrefWpm = "wpm";
 constexpr const char *kPrefBrightness = "bright";
 constexpr const char *kPrefDarkMode = "dark";
@@ -261,46 +252,11 @@ constexpr const char *kPrefTypographyTracking = "type_trk";
 constexpr const char *kPrefTypographyAnchor = "type_anc";
 constexpr const char *kPrefTypographyGuideWidth = "type_wid";
 constexpr const char *kPrefTypographyGuideGap = "type_gap";
-constexpr const char *kPrefRecentSeq = "seq";
 constexpr const char *kPrefLifetimeWords = "lt_words";
 constexpr const char *kPrefLifetimeMs = "lt_ms";
 constexpr const char *kPrefLifetimeBooks = "lt_books";
 constexpr const char *kPrefStreakDays = "streak";
 constexpr const char *kPrefStreakLastDay = "streak_day";
-constexpr const char *kPrefTimezoneOffset = "tz_off";
-
-// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm). Used to
-// compare calendar days for the streak and to convert between UTC and local.
-int32_t civilDayNumber(int year, int month, int day) {
-  year -= month <= 2;
-  const int era = (year >= 0 ? year : year - 399) / 400;
-  const unsigned yoe = static_cast<unsigned>(year - era * 400);
-  const unsigned doy =
-      (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + static_cast<unsigned>(day) - 1;
-  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-  return era * 146097 + static_cast<int>(doe) - 719468;
-}
-
-// Inverse of civilDayNumber: day-count since 1970-01-01 -> civil date.
-void civilFromDayNumber(int32_t z, int &year, int &month, int &day) {
-  z += 719468;
-  const int era = (z >= 0 ? z : z - 146096) / 146097;
-  const unsigned doe = static_cast<unsigned>(z - era * 146097);
-  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-  const int y = static_cast<int>(yoe) + era * 400;
-  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-  const unsigned mp = (5 * doy + 2) / 153;
-  day = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
-  month = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
-  year = y + (month <= 2);
-}
-
-// Floor division (rounds toward negative infinity) for time-of-day west of UTC.
-int64_t floorDiv(int64_t a, int64_t b) {
-  const int64_t q = a / b;
-  return (a % b != 0 && ((a < 0) != (b < 0))) ? q - 1 : q;
-}
-
 uint8_t daysInMonth(uint16_t year, uint8_t month) {
   static const uint8_t kDays[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
   if (month < 1 || month > 12) {
@@ -335,7 +291,6 @@ constexpr const char *kPrefScrollWordSpacing = "psc_wspc";
 constexpr size_t kReaderFontSizeCount = 3;
 constexpr size_t kPhantomBeforeCharTargets[] = {64, 96, 144};
 constexpr size_t kPhantomAfterCharTargets[] = {96, 144, 208};
-constexpr uint32_t kNoSavedWordIndex = 0xFFFFFFFFUL;
 constexpr uint16_t kPacingDelayMinMs = 0;
 constexpr uint16_t kPacingDelayMaxMs = 600;
 constexpr uint16_t kPacingDelayStepMs = 50;
@@ -371,10 +326,6 @@ constexpr const char *kTypographyPreviewWords[] = {
 constexpr size_t kTypographyPreviewWordCount =
     sizeof(kTypographyPreviewWords) / sizeof(kTypographyPreviewWords[0]);
 constexpr size_t kWifiPasswordMaxLength = 63;
-constexpr uint16_t kKeyboardMarginX = 8;
-constexpr uint16_t kKeyboardTopY = 48;
-constexpr uint16_t kKeyboardRowGap = 4;
-constexpr uint16_t kKeyboardRowHeight = 27;
 
 void logApp(const char *message) {
   ESP_LOGI(kAppTag, "%s", message);
@@ -393,15 +344,6 @@ String displayNameForPath(const String &path) {
     name.remove(name.length() - 5);
   }
   return name;
-}
-
-uint32_t hashBookPath(const String &path) {
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < path.length(); ++i) {
-    hash ^= static_cast<uint8_t>(path[i]);
-    hash *= 16777619UL;
-  }
-  return hash;
 }
 
 int clampIntSetting(int value, int minValue, int maxValue) {
@@ -447,167 +389,8 @@ String wifiSecurityLabel(uint8_t authMode) {
   return wifiNetworkRequiresPassword(authMode) ? "Secure" : "Open";
 }
 
-String maskedValue(const String &value) {
-  String masked;
-  masked.reserve(value.length());
-  for (size_t i = 0; i < value.length(); ++i) {
-    masked += '*';
-  }
-  return masked;
-}
-
-const char *keyboardRowText(uint8_t modeValue, size_t rowIndex) {
-  static constexpr const char *kLowerRows[] = {
-      "qwertyuiop",
-      "asdfghjkl",
-      "zxcvbnm",
-  };
-  static constexpr const char *kUpperRows[] = {
-      "QWERTYUIOP",
-      "ASDFGHJKL",
-      "ZXCVBNM",
-  };
-  static constexpr const char *kSymbolRows[] = {
-      "1234567890",
-      "!@#$%^&*?",
-      "-_=+/:;.,",
-  };
-
-  if (rowIndex >= 3) {
-    return "";
-  }
-
-  switch (modeValue) {
-    case 1:
-      return kUpperRows[rowIndex];
-    case 2:
-      return kSymbolRows[rowIndex];
-    default:
-      return kLowerRows[rowIndex];
-  }
-}
-
 String storedOrFallbackLabel(const String &value, const String &fallback) {
   return value.isEmpty() ? fallback : value;
-}
-
-size_t packedLifeWordCount(size_t cellCount) { return (cellCount + 31U) / 32U; }
-
-bool packedLifeCellAlive(const std::vector<uint32_t> &cells, size_t index) {
-  const size_t word = index / 32U;
-  if (word >= cells.size()) {
-    return false;
-  }
-  return (cells[word] & (1UL << (index % 32U))) != 0;
-}
-
-void setPackedLifeCell(std::vector<uint32_t> &cells, size_t index, bool alive) {
-  const size_t word = index / 32U;
-  if (word >= cells.size()) {
-    return;
-  }
-  const uint32_t mask = 1UL << (index % 32U);
-  if (alive) {
-    cells[word] |= mask;
-  } else {
-    cells[word] &= ~mask;
-  }
-}
-
-uint32_t advanceStandbyRng(uint32_t &rng) {
-  rng = (rng * 1664525UL) + 1013904223UL;
-  return rng;
-}
-
-struct LifePoint {
-  int8_t x;
-  int8_t y;
-};
-
-void setPackedLifeCellAt(std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows, int x,
-                         int y, bool alive) {
-  if (x < 0 || y < 0 || x >= static_cast<int>(columns) || y >= static_cast<int>(rows)) {
-    return;
-  }
-  setPackedLifeCell(cells, static_cast<size_t>(y) * columns + static_cast<size_t>(x), alive);
-}
-
-void clearPackedLifeRect(std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows, int x,
-                         int y, int width, int height) {
-  const int xEnd = std::min(static_cast<int>(columns), x + width);
-  const int yEnd = std::min(static_cast<int>(rows), y + height);
-  for (int cy = std::max(0, y); cy < yEnd; ++cy) {
-    for (int cx = std::max(0, x); cx < xEnd; ++cx) {
-      setPackedLifeCellAt(cells, columns, rows, cx, cy, false);
-    }
-  }
-}
-
-void stampPackedLifePattern(std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
-                            const LifePoint *points, size_t pointCount, int originX,
-                            int originY) {
-  for (size_t i = 0; i < pointCount; ++i) {
-    setPackedLifeCellAt(cells, columns, rows, originX + points[i].x, originY + points[i].y, true);
-  }
-}
-
-void clearAndStampPackedLifePattern(std::vector<uint32_t> &cells, uint16_t columns, uint16_t rows,
-                                    const LifePoint *points, size_t pointCount, int originX,
-                                    int originY, int width, int height) {
-  if (originX < 0 || originY < 0 || originX + width > static_cast<int>(columns) ||
-      originY + height > static_cast<int>(rows)) {
-    return;
-  }
-  constexpr int kPatternMargin = 5;
-  clearPackedLifeRect(cells, columns, rows, originX - kPatternMargin, originY - kPatternMargin,
-                      width + kPatternMargin * 2, height + kPatternMargin * 2);
-  stampPackedLifePattern(cells, columns, rows, points, pointCount, originX, originY);
-}
-
-constexpr LifePoint kLifeGlider[] = {
-    {1, 0},
-    {2, 1},
-    {0, 2},
-    {1, 2},
-    {2, 2},
-};
-
-constexpr LifePoint kLifeLightweightSpaceship[] = {
-    {1, 0}, {4, 0}, {0, 1}, {0, 2}, {4, 2}, {0, 3}, {1, 3}, {2, 3}, {3, 3},
-};
-
-constexpr LifePoint kLifePentadecathlon[] = {
-    {2, 0}, {2, 1}, {1, 2}, {3, 2}, {2, 3}, {2, 4},
-    {2, 5}, {2, 6}, {1, 7}, {3, 7}, {2, 8}, {2, 9},
-};
-
-constexpr LifePoint kLifePulsar[] = {
-    {2, 0},  {3, 0},  {4, 0},  {8, 0},  {9, 0},  {10, 0}, {0, 2},  {5, 2},
-    {7, 2},  {12, 2}, {0, 3},  {5, 3},  {7, 3},  {12, 3}, {0, 4},  {5, 4},
-    {7, 4},  {12, 4}, {2, 5},  {3, 5},  {4, 5},  {8, 5},  {9, 5},  {10, 5},
-    {2, 7},  {3, 7},  {4, 7},  {8, 7},  {9, 7},  {10, 7}, {0, 8},  {5, 8},
-    {7, 8},  {12, 8}, {0, 9},  {5, 9},  {7, 9},  {12, 9}, {0, 10}, {5, 10},
-    {7, 10}, {12, 10}, {2, 12}, {3, 12}, {4, 12}, {8, 12}, {9, 12}, {10, 12},
-};
-
-constexpr LifePoint kLifeGosperGliderGun[] = {
-    {24, 0}, {22, 1}, {24, 1}, {12, 2}, {13, 2}, {20, 2}, {21, 2}, {34, 2}, {35, 2},
-    {11, 3}, {15, 3}, {20, 3}, {21, 3}, {34, 3}, {35, 3}, {0, 4},  {1, 4},
-    {10, 4}, {16, 4}, {20, 4}, {21, 4}, {0, 5},  {1, 5},  {10, 5}, {14, 5},
-    {16, 5}, {17, 5}, {22, 5}, {24, 5}, {10, 6}, {16, 6}, {24, 6}, {11, 7},
-    {15, 7}, {12, 8}, {13, 8},
-};
-
-void copyOtaLabel(char *destination, size_t destinationSize, const String &source) {
-  if (destination == nullptr || destinationSize == 0) {
-    return;
-  }
-
-  const size_t copyLength = std::min(destinationSize - 1, source.length());
-  for (size_t i = 0; i < copyLength; ++i) {
-    destination[i] = source[i];
-  }
-  destination[copyLength] = '\0';
 }
 
 bool sdCardFolderRepairNeeded(const StorageManager::DiagnosticResult &result) {
@@ -709,7 +492,60 @@ uint16_t loadPacingDelayMs(Preferences &preferences, const char *key, const char
 
 }  // namespace
 
-App::App() : button_(BoardConfig::PIN_BOOT_BUTTON), powerButton_(BoardConfig::PIN_PWR_BUTTON) {}
+App::App()
+    : button_(BoardConfig::PIN_BOOT_BUTTON),
+      powerButton_(BoardConfig::PIN_PWR_BUTTON),
+      screensaver_(
+          display_, [this]() { return static_cast<uint32_t>(reader_.currentIndex()); },
+          [this]() { return batteryDisplayedPercent_; }),
+      textEntry_(
+          display_, [this](uint32_t nowMs) { submitWifiPassword(nowMs); },
+          [this]() {
+            menuScreen_ = textEntryReturnScreen_;
+            textEntry_.close();
+            renderMenu();
+          }),
+      clock_(
+          display_, preferences_,
+          [this](const char *label, uint32_t nowMs) { return ota_.blockForCheck(label, nowMs); },
+          [this](String &ssid, String &password) {
+            const OtaUpdater::Config cfg = preferredOtaConfig();
+            if (cfg.wifiSsid.isEmpty()) {
+              return false;
+            }
+            ssid = cfg.wifiSsid;
+            password = cfg.wifiPassword;
+            return true;
+          },
+          [this]() { updateStreakForToday(); }),
+      ota_(
+          display_, [this]() { renderMenu(); }, [this]() { saveReadingPosition(true); },
+          [this]() { applyStateCpuFrequency(); },
+          [this](uint32_t nowMs) {
+            if (state_ == AppState::Menu &&
+                (menuScreen_ == MenuScreen::SettingsHome ||
+                 menuScreen_ == MenuScreen::SettingsDisplay ||
+                 menuScreen_ == MenuScreen::SettingsPacing ||
+                 menuScreen_ == MenuScreen::SettingsBattery ||
+                 menuScreen_ == MenuScreen::SettingsClock ||
+                 menuScreen_ == MenuScreen::WifiSettings)) {
+              rebuildSettingsMenuItems();
+              renderSettings();
+            } else {
+              menuScreen_ = MenuScreen::Main;
+              setState(AppState::Paused, nowMs);
+            }
+          },
+          [this](const char *title, const char *line1, const char *line2, int percent) {
+            renderStorageStatus(title, line1, line2, percent);
+          }),
+      timeEstimate_(
+          reader_, [this]() { return state_; },
+          [this](uint32_t nowMs) { renderActiveReader(nowMs); }, [this]() { renderMenu(); },
+          [this](const char *title, const char *line1, const char *line2, int percent) {
+            renderStorageStatus(title, line1, line2, percent);
+          }),
+      library_(preferences_, storage_) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
   const char *reset = "?";
@@ -749,7 +585,7 @@ void App::begin() {
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
   loadLifetimeStats();
-  timezoneOffsetMinutes_ = preferences_.getInt(kPrefTimezoneOffset, 0);
+  clock_.loadSettings();
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
@@ -806,21 +642,8 @@ void App::begin() {
       batteryLabelMode_ = BatteryLabelMode::Percent;
       break;
   }
-  switch (preferences_.getUChar(kPrefScreensaverMode, static_cast<uint8_t>(screensaverMode_))) {
-    case static_cast<uint8_t>(ScreensaverMode::Maze):
-      screensaverMode_ = ScreensaverMode::Maze;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::Voronoi):
-      screensaverMode_ = ScreensaverMode::Voronoi;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::ScreenOff):
-      screensaverMode_ = ScreensaverMode::ScreenOff;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::Life):
-    default:
-      screensaverMode_ = ScreensaverMode::Life;
-      break;
-  }
+  screensaver_.setMode(StandbyScreensaver::modeFromValue(preferences_.getUChar(
+      kPrefScreensaverMode, static_cast<uint8_t>(screensaver_.mode()))));
   switch (preferences_.getUChar(kPrefPauseMode, static_cast<uint8_t>(pauseMode_))) {
     case static_cast<uint8_t>(PauseMode::Instant):
       pauseMode_ = PauseMode::Instant;
@@ -874,7 +697,7 @@ void App::begin() {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
-  accurateTimeEstimateEnabled_ = true;
+  timeEstimate_.setAccurateEstimate(true);
   typographyConfig_ = defaultTypographyConfig();
   typographyConfig_.typeface = readerTypefaceFromSetting(
       preferences_.getUChar(kPrefReaderTypeface, static_cast<uint8_t>(typographyConfig_.typeface)));
@@ -904,7 +727,7 @@ void App::begin() {
   lastStateLogMs_ = bootStartedMs_;
   lastUserActivityMs_ = bootStartedMs_;
   lastScrollAnimationRenderMs_ = 0;
-  Serial.printf("[app] version=%s\n", otaUpdater_.currentVersion().c_str());
+  Serial.printf("[app] version=%s\n", ota_.currentVersion().c_str());
 
   logApp("Initializing hardware modules");
   const bool displayReady = display_.begin();
@@ -953,7 +776,7 @@ void App::begin() {
     currentBookTitle_ = "Demo";
     reader_.begin(bootStartedMs_);
     invalidateContextPreviewWindow();
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
     Serial.println("[app] using built-in demo text");
   } else {
     currentBookTitle_ = storage_.bookDisplayName(pendingBootBookIndex_);
@@ -1060,7 +883,7 @@ void App::update(uint32_t nowMs) {
     }
 #endif
     handleTouch(nowMs);
-    updateStandbyScreensaver(nowMs);
+    screensaver_.update(nowMs);
     if (nowMs - lastStateLogMs_ > 1500) {
       lastStateLogMs_ = nowMs;
       ESP_LOGI(kAppTag, "state=%s", stateName(state_));
@@ -1070,7 +893,7 @@ void App::update(uint32_t nowMs) {
     return;
   }
 
-  pollOtaCheckResult(nowMs);
+  ota_.pollResult(nowMs);
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
@@ -1082,7 +905,7 @@ void App::update(uint32_t nowMs) {
   updateAutoDim(nowMs);
   updateBatteryRuntimeLabel(nowMs);
   maybeSaveReadingPosition(nowMs);
-  updateTimeEstimateBuild(nowMs);
+  timeEstimate_.update(nowMs, currentBookPath_);
 #if defined(BOARD_AMOLED_18)
   updateDeepStandbyIdle(nowMs);  // deep standby auto-enter (own configurable delay)
   if (state_ == AppState::PowerSaving) {
@@ -1150,7 +973,7 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
   const AppState previousState = state_;
   if (previousState == AppState::Menu && nextState != AppState::Menu) {
-    flushPendingTimeEstimateRebuild();
+    timeEstimate_.flushPendingRebuild(currentBookPath_, currentBookTitle_);
   }
 
   // Accumulate active reading time for the completion-screen + lifetime stats.
@@ -1212,8 +1035,8 @@ void App::setState(AppState nextState, uint32_t nowMs) {
       display_.renderStatus("USB", "Preparing SD", "Eject when done");
       break;
     case AppState::Standby:
-      seedStandbyScreensaver(nowMs);
-      updateStandbyScreensaver(nowMs, true);
+      screensaver_.seed(nowMs);
+      screensaver_.update(nowMs, true);
       break;
     case AppState::PowerSaving:
       // Screen + touch are already off; nothing to draw.
@@ -1239,7 +1062,7 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
 void App::applyStateCpuFrequency() {
   // While a background OTA check is running we need the full clock for Wi-Fi/TLS.
-  if (otaCheckInProgress_) {
+  if (ota_.checkInProgress()) {
     if (getCpuFrequencyMhz() != 240) {
       setCpuFrequencyMhz(240);
       Serial.println("[power] CPU -> 240 MHz (OTA active)");
@@ -1782,21 +1605,8 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       break;
   }
 
-  switch (preferences_.getUChar(kPrefScreensaverMode, static_cast<uint8_t>(screensaverMode_))) {
-    case static_cast<uint8_t>(ScreensaverMode::Maze):
-      screensaverMode_ = ScreensaverMode::Maze;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::Voronoi):
-      screensaverMode_ = ScreensaverMode::Voronoi;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::ScreenOff):
-      screensaverMode_ = ScreensaverMode::ScreenOff;
-      break;
-    case static_cast<uint8_t>(ScreensaverMode::Life):
-    default:
-      screensaverMode_ = ScreensaverMode::Life;
-      break;
-  }
+  screensaver_.setMode(StandbyScreensaver::modeFromValue(preferences_.getUChar(
+      kPrefScreensaverMode, static_cast<uint8_t>(screensaver_.mode()))));
 
   switch (preferences_.getUChar(kPrefPauseMode, static_cast<uint8_t>(pauseMode_))) {
     case static_cast<uint8_t>(PauseMode::Instant):
@@ -1814,7 +1624,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
-  accurateTimeEstimateEnabled_ = true;
+  timeEstimate_.setAccurateEstimate(true);
 
   typographyConfig_ = defaultTypographyConfig();
   typographyConfig_.typeface = readerTypefaceFromSetting(
@@ -2129,7 +1939,7 @@ void App::updateBatteryWarningOverlay(uint32_t nowMs) {
   } else if (state_ == AppState::Menu) {
     renderMenu();
   } else if (state_ == AppState::Standby) {
-    updateStandbyScreensaver(nowMs, true);
+    screensaver_.update(nowMs, true);
   }
 }
 
@@ -2794,7 +2604,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::TextEntry) {
     if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
-      handleTextEntryTap(event.x, event.y, nowMs);
+      textEntry_.handleTap(event.x, event.y, nowMs);
     }
     return;
   }
@@ -3305,7 +3115,7 @@ void App::selectSettingsItem(uint32_t nowMs) {
         openWifiSettings();
         return;
       case kSettingsHomeUpdateIndex: {
-        runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
+        ota_.runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
         return;
       }
       case kSettingsHomeBatteryIndex:
@@ -3387,22 +3197,8 @@ void App::selectSettingsItem(uint32_t nowMs) {
         renderSettings();
         return;
       case kSettingsDisplayScreensaverIndex:
-        switch (screensaverMode_) {
-          case ScreensaverMode::Life:
-            screensaverMode_ = ScreensaverMode::Maze;
-            break;
-          case ScreensaverMode::Maze:
-            screensaverMode_ = ScreensaverMode::Voronoi;
-            break;
-          case ScreensaverMode::Voronoi:
-            screensaverMode_ = ScreensaverMode::ScreenOff;
-            break;
-          case ScreensaverMode::ScreenOff:
-          default:
-            screensaverMode_ = ScreensaverMode::Life;
-            break;
-        }
-        preferences_.putUChar(kPrefScreensaverMode, static_cast<uint8_t>(screensaverMode_));
+        preferences_.putUChar(kPrefScreensaverMode,
+                              static_cast<uint8_t>(screensaver_.cycleMode()));
         rebuildSettingsMenuItems();
         renderSettings();
         return;
@@ -3445,7 +3241,7 @@ void App::selectSettingsItem(uint32_t nowMs) {
   bool pacingConfigChanged = false;
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
-      flushPendingTimeEstimateRebuild();
+      timeEstimate_.flushPendingRebuild(currentBookPath_, currentBookTitle_);
       settingsSelectedIndex_ = kSettingsHomePacingIndex;
       menuScreen_ = MenuScreen::SettingsHome;
       rebuildSettingsMenuItems();
@@ -3676,22 +3472,8 @@ void App::selectWifiSettingsItem(uint32_t nowMs) {
   }
 }
 
-String App::timezoneLabel() const {
-  if (timezoneOffsetMinutes_ == 0) {
-    return "UTC";
-  }
-  const int absMin = timezoneOffsetMinutes_ < 0 ? -timezoneOffsetMinutes_ : timezoneOffsetMinutes_;
-  String s = String("UTC") + (timezoneOffsetMinutes_ > 0 ? "+" : "-") + String(absMin / 60);
-  if (absMin % 60 != 0) {
-    char buf[5];
-    std::snprintf(buf, sizeof(buf), ":%02d", absMin % 60);
-    s += buf;
-  }
-  return s;
-}
-
 void App::scanWifiNetworks() {
-  if (blockNetworkActionForOtaCheck("Wi-Fi", millis())) {
+  if (ota_.blockForCheck("Wi-Fi", millis())) {
     return;
   }
 
@@ -3788,9 +3570,7 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
     if (configuredWifiSsid() == network.ssid) {
       initialValue = preferredOtaConfig().wifiPassword;
     }
-    openTextEntry(TextEntryPurpose::WifiPassword, network.ssid, "Password", "",
-                  initialValue, network.ssid, true, kWifiPasswordMaxLength,
-                  MenuScreen::WifiNetworks);
+    openWifiPasswordEntry(network.ssid, initialValue);
     return;
   }
 
@@ -3801,249 +3581,28 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
   openWifiSettings();
 }
 
-void App::openTextEntry(TextEntryPurpose purpose, const String &title, const String &prompt,
-                        const String &helperText, const String &initialValue,
-                        const String &contextValue, bool masked, size_t maxLength,
-                        MenuScreen returnScreen) {
-  textEntrySession_ = TextEntrySession();
-  textEntrySession_.active = true;
-  textEntrySession_.purpose = purpose;
-  textEntrySession_.mode = KeyboardMode::Lower;
-  textEntrySession_.returnScreen = returnScreen;
-  textEntrySession_.title = title;
-  textEntrySession_.prompt = prompt;
-  textEntrySession_.helperText = helperText;
-  textEntrySession_.value = initialValue;
-  textEntrySession_.contextValue = contextValue;
-  textEntrySession_.maxLength = maxLength;
-  textEntrySession_.masked = masked;
-  textEntrySession_.revealValue = false;
+void App::openWifiPasswordEntry(const String &ssid, const String &initialValue) {
+  textEntryReturnScreen_ = MenuScreen::WifiNetworks;
   menuScreen_ = MenuScreen::TextEntry;
-  rebuildTextEntryButtons();
-  renderTextEntry();
+  textEntry_.open(ssid, "Password", "", initialValue, ssid, true, kWifiPasswordMaxLength);
 }
 
-void App::rebuildTextEntryButtons() {
-  textEntryButtons_.clear();
-  if (!textEntrySession_.active) {
-    return;
-  }
-
-  const uint16_t rowPitch = kKeyboardRowHeight + kKeyboardRowGap;
-  for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex) {
-    const String rowChars = keyboardRowText(static_cast<uint8_t>(textEntrySession_.mode), rowIndex);
-    const size_t keyCount = rowChars.length();
-    if (keyCount == 0) {
-      continue;
-    }
-
-    const int availableWidth =
-        BoardConfig::DISPLAY_WIDTH - (2 * kKeyboardMarginX) -
-        static_cast<int>((keyCount - 1) * kKeyboardRowGap);
-    const int keyWidth = std::max(28, availableWidth / static_cast<int>(keyCount));
-    const int totalWidth =
-        keyWidth * static_cast<int>(keyCount) + static_cast<int>((keyCount - 1) * kKeyboardRowGap);
-    int x = std::max(0, (BoardConfig::DISPLAY_WIDTH - totalWidth) / 2);
-    const int y = kKeyboardTopY + static_cast<int>(rowIndex * rowPitch);
-
-    for (size_t charIndex = 0; charIndex < keyCount; ++charIndex) {
-      TextEntryButton button;
-      button.view.label = String(rowChars[charIndex]);
-      button.view.x = static_cast<uint16_t>(x);
-      button.view.y = static_cast<uint16_t>(y);
-      button.view.width = static_cast<uint16_t>(keyWidth);
-      button.view.height = kKeyboardRowHeight;
-      button.action = TextEntryAction::Insert;
-      button.payload = String(rowChars[charIndex]);
-      textEntryButtons_.push_back(button);
-      x += keyWidth + kKeyboardRowGap;
-    }
-  }
-
-  struct ControlButtonDef {
-    String label;
-    TextEntryAction action;
-    uint16_t units;
-    bool accent;
-    bool active;
-  };
-
-  const bool revealActive = textEntrySession_.masked && textEntrySession_.revealValue;
-  const ControlButtonDef controls[] = {
-      {"abc", TextEntryAction::SetLower, 11, false,
-       textEntrySession_.mode == KeyboardMode::Lower},
-      {"ABC", TextEntryAction::SetUpper, 11, false,
-       textEntrySession_.mode == KeyboardMode::Upper},
-      {"123", TextEntryAction::SetSymbols, 11, false,
-       textEntrySession_.mode == KeyboardMode::Symbols},
-      {"space", TextEntryAction::Space, 24, false, false},
-      {"back", TextEntryAction::Backspace, 13, false, false},
-      {textEntrySession_.masked ? (revealActive ? "hide" : "show") : "clear",
-       textEntrySession_.masked ? TextEntryAction::ToggleMask : TextEntryAction::Clear, 13, false,
-       revealActive},
-      {"save", TextEntryAction::Save, 12, true, false},
-      {"cancel", TextEntryAction::Cancel, 14, false, false},
-  };
-
-  uint16_t totalUnits = 0;
-  for (const ControlButtonDef &control : controls) {
-    totalUnits += control.units;
-  }
-
-  const size_t controlCount = sizeof(controls) / sizeof(controls[0]);
-  const int totalGapWidth = static_cast<int>((controlCount - 1) * kKeyboardRowGap);
-  const int availableWidth = BoardConfig::DISPLAY_WIDTH - (2 * kKeyboardMarginX) - totalGapWidth;
-  int remainingWidth = availableWidth;
-  uint16_t x = kKeyboardMarginX;
-  const uint16_t y = kKeyboardTopY + static_cast<uint16_t>(3 * rowPitch);
-
-  for (size_t i = 0; i < controlCount; ++i) {
-    const ControlButtonDef &control = controls[i];
-    int width = remainingWidth;
-    if (i + 1 < controlCount) {
-      width = (availableWidth * control.units) / totalUnits;
-      remainingWidth -= width;
-    }
-
-    TextEntryButton button;
-    button.view.label = control.label;
-    button.view.x = x;
-    button.view.y = y;
-    button.view.width = static_cast<uint16_t>(std::max(28, width));
-    button.view.height = kKeyboardRowHeight;
-    button.view.accent = control.accent;
-    button.view.active = control.active;
-    button.action = control.action;
-    textEntryButtons_.push_back(button);
-
-    x = static_cast<uint16_t>(x + button.view.width + kKeyboardRowGap);
-  }
-}
-
-void App::renderTextEntry() {
-  if (!textEntrySession_.active) {
-    return;
-  }
-
-  const String visibleValue =
-      (textEntrySession_.masked && !textEntrySession_.revealValue)
-          ? maskedValue(textEntrySession_.value)
-          : textEntrySession_.value;
-
-  std::vector<DisplayManager::Button> buttons;
-  buttons.reserve(textEntryButtons_.size());
-  for (const TextEntryButton &button : textEntryButtons_) {
-    buttons.push_back(button.view);
-  }
-
-  display_.renderTextEntry(textEntrySession_.title, textEntrySession_.prompt, visibleValue,
-                           textEntrySession_.helperText, buttons);
-}
-
-bool App::handleTextEntryTap(uint16_t x, uint16_t y, uint32_t nowMs) {
-  if (!textEntrySession_.active) {
-    return false;
-  }
-
-  for (size_t i = 0; i < textEntryButtons_.size(); ++i) {
-    const DisplayManager::Button &button = textEntryButtons_[i].view;
-    const uint16_t maxX = button.x + button.width;
-    const uint16_t maxY = button.y + button.height;
-    if (x < button.x || x > maxX || y < button.y || y > maxY) {
-      continue;
-    }
-
-    activateTextEntryButton(i, nowMs);
-    return true;
-  }
-
-  return false;
-}
-
-void App::activateTextEntryButton(size_t buttonIndex, uint32_t nowMs) {
-  if (buttonIndex >= textEntryButtons_.size()) {
-    return;
-  }
-
-  TextEntryButton &button = textEntryButtons_[buttonIndex];
-  switch (button.action) {
-    case TextEntryAction::Insert:
-      if (textEntrySession_.value.length() < textEntrySession_.maxLength) {
-        textEntrySession_.value += button.payload;
-      }
-      break;
-    case TextEntryAction::SetLower:
-      textEntrySession_.mode = KeyboardMode::Lower;
-      break;
-    case TextEntryAction::SetUpper:
-      textEntrySession_.mode = KeyboardMode::Upper;
-      break;
-    case TextEntryAction::SetSymbols:
-      textEntrySession_.mode = KeyboardMode::Symbols;
-      break;
-    case TextEntryAction::Space:
-      if (textEntrySession_.value.length() < textEntrySession_.maxLength) {
-        textEntrySession_.value += ' ';
-      }
-      break;
-    case TextEntryAction::Backspace:
-      if (!textEntrySession_.value.isEmpty()) {
-        textEntrySession_.value.remove(textEntrySession_.value.length() - 1);
-      }
-      break;
-    case TextEntryAction::Clear:
-      textEntrySession_.value = "";
-      break;
-    case TextEntryAction::ToggleMask:
-      if (textEntrySession_.masked) {
-        textEntrySession_.revealValue = !textEntrySession_.revealValue;
-      }
-      break;
-    case TextEntryAction::Save:
-      commitTextEntry(nowMs);
-      return;
-    case TextEntryAction::Cancel:
-      menuScreen_ = textEntrySession_.returnScreen;
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      renderMenu();
-      return;
-  }
-
-  rebuildTextEntryButtons();
-  renderTextEntry();
-}
-
-void App::commitTextEntry(uint32_t nowMs) {
+void App::submitWifiPassword(uint32_t nowMs) {
   (void)nowMs;
-
-  switch (textEntrySession_.purpose) {
-    case TextEntryPurpose::WifiPassword: {
-      if (textEntrySession_.value.isEmpty()) {
-        display_.renderStatus("Wi-Fi", "Password required", textEntrySession_.contextValue);
-        delay(1000);
-        renderTextEntry();
-        return;
-      }
-
-      const String ssid = textEntrySession_.contextValue;
-      preferences_.putString(kPrefWifiSsid, ssid);
-      preferences_.putString(kPrefWifiPass, textEntrySession_.value);
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      display_.renderStatus("Wi-Fi", "Network saved", ssid);
-      delay(900);
-      openWifiSettings();
-      return;
-    }
-    case TextEntryPurpose::None:
-    default:
-      menuScreen_ = textEntrySession_.returnScreen;
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      renderMenu();
-      return;
+  if (textEntry_.value().isEmpty()) {
+    display_.renderStatus("Wi-Fi", "Password required", textEntry_.contextValue());
+    delay(1000);
+    textEntry_.render();
+    return;
   }
+
+  const String ssid = textEntry_.contextValue();
+  preferences_.putString(kPrefWifiSsid, ssid);
+  preferences_.putString(kPrefWifiPass, textEntry_.value());
+  textEntry_.close();
+  display_.renderStatus("Wi-Fi", "Network saved", ssid);
+  delay(900);
+  openWifiSettings();
 }
 
 void App::openTypographyTuning() {
@@ -4154,7 +3713,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Battery");
     settingsMenuItems_.push_back("Clock");
     settingsMenuItems_.push_back(firmwareUpdateMenuLabel());
-    settingsMenuItems_.push_back("Installed: " + firmwareVersionLabel());
+    settingsMenuItems_.push_back("Installed: " + ota_.firmwareVersionLabel());
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Display mode: " + themeModeLabel());
@@ -4164,7 +3723,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Chapter label: " + onOffLabel(chapterLabelEnabled_));
     settingsMenuItems_.push_back("Footer label: " + footerMetricModeLabel());
     settingsMenuItems_.push_back("Battery label: " + batteryLabelModeLabel());
-    settingsMenuItems_.push_back("Screensaver: " + screensaverModeLabel());
+    settingsMenuItems_.push_back("Screensaver: " + screensaver_.modeLabel());
     settingsMenuItems_.push_back("Reading battery: " +
                                  onOffLabel(readerBatteryVisibleWhilePlaying_));
     settingsMenuItems_.push_back("Reading chapter: " +
@@ -4208,22 +3767,23 @@ void App::rebuildSettingsMenuItems() {
     char buf[8];
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Sync via Wi-Fi");
-    settingsMenuItems_.push_back("Timezone: " + timezoneLabel());
-    std::snprintf(buf, sizeof(buf), "%04u", clockEdit_.year);
+    settingsMenuItems_.push_back("Timezone: " + clock_.timezoneLabel());
+    const BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
+    std::snprintf(buf, sizeof(buf), "%04u", clockEdit.year);
     settingsMenuItems_.push_back(String("Year: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.month);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.month);
     settingsMenuItems_.push_back(String("Month: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.day);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.day);
     settingsMenuItems_.push_back(String("Day: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.hour);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.hour);
     settingsMenuItems_.push_back(String("Hour: ") + buf);
-    std::snprintf(buf, sizeof(buf), "%02u", clockEdit_.minute);
+    std::snprintf(buf, sizeof(buf), "%02u", clockEdit.minute);
     settingsMenuItems_.push_back(String("Minute: ") + buf);
     BoardConfig::RtcDateTime now;
     int32_t day = 0;
-    if (localNow(now, day)) {
+    if (clock_.localNow(now, day)) {
       std::snprintf(buf, sizeof(buf), "%02u:%02u", now.hour, now.minute);
-      settingsMenuItems_.push_back(String("Now: ") + buf + " " + timezoneLabel());
+      settingsMenuItems_.push_back(String("Now: ") + buf + " " + clock_.timezoneLabel());
     } else {
       settingsMenuItems_.push_back("Now: not set");
     }
@@ -4256,22 +3816,15 @@ void App::applyPacingSettings() {
                 static_cast<unsigned int>(pacingComplexWordDelayMs_),
                 static_cast<unsigned int>(pacingPunctuationDelayMs_));
   if (state_ == AppState::Menu && menuScreen_ == MenuScreen::SettingsPacing) {
-    pacingCacheDirty_ = true;
+    timeEstimate_.markPendingRebuild();
   } else {
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
   }
-}
-
-void App::flushPendingTimeEstimateRebuild() {
-  if (!pacingCacheDirty_) {
-    return;
-  }
-  rebuildTimeEstimateCache();
 }
 
 OtaUpdater::Config App::preferredOtaConfig() {
   OtaUpdater::Config otaConfig;
-  otaUpdater_.loadConfig(otaConfig);
+  ota_.loadConfig(otaConfig);
 
   if (preferences_.isKey(kPrefWifiSsid)) {
     otaConfig.wifiSsid = preferences_.getString(kPrefWifiSsid, "");
@@ -4290,7 +3843,7 @@ String App::configuredWifiSsid() {
   String ssid = preferences_.getString(kPrefWifiSsid, "");
   if (ssid.isEmpty()) {
     OtaUpdater::Config otaConfig;
-    otaUpdater_.loadConfig(otaConfig);
+    ota_.loadConfig(otaConfig);
     ssid = otaConfig.wifiSsid;
   }
   ssid.trim();
@@ -4303,109 +3856,23 @@ bool App::otaAutoCheckEnabled() {
   }
 
   OtaUpdater::Config otaConfig;
-  otaUpdater_.loadConfig(otaConfig);
+  ota_.loadConfig(otaConfig);
   return otaConfig.autoCheck;
 }
 
 void App::maybeAutoCheckForUpdates(uint32_t nowMs) {
   (void)nowMs;
   OtaUpdater::Config otaConfig = preferredOtaConfig();
-  if (!otaConfig.autoCheck || !otaUpdater_.isConfigured(otaConfig)) {
+  if (!otaConfig.autoCheck || !ota_.isConfigured(otaConfig)) {
     return;
   }
 
   Serial.println("[ota] auto-check enabled");
-  startBackgroundOtaCheck(otaConfig);
-}
-
-bool App::startBackgroundOtaCheck(const OtaUpdater::Config &config) {
-  if (otaCheckInProgress_) {
-    Serial.println("[ota] background check already running");
-    return false;
-  }
-
-  if (otaCheckQueue_ == nullptr) {
-    otaCheckQueue_ = xQueueCreate(1, sizeof(OtaCheckResult));
-    if (otaCheckQueue_ == nullptr) {
-      Serial.println("[ota] could not create result queue");
-      return false;
-    }
-  }
-  xQueueReset(otaCheckQueue_);
-
-  OtaCheckTaskParams *params = new OtaCheckTaskParams();
-  if (params == nullptr) {
-    Serial.println("[ota] could not allocate task params");
-    return false;
-  }
-  params->config = config;
-  params->resultQueue = otaCheckQueue_;
-
-  otaCheckInProgress_ = true;
-  BaseType_t created = xTaskCreatePinnedToCore(otaCheckTask, "ota_check",
-                                               kOtaCheckTaskStackBytes, params, 1, nullptr, 0);
-  if (created != pdPASS) {
-    Serial.printf("[ota] background task create failed: %ld\n", static_cast<long>(created));
-    otaCheckInProgress_ = false;
-    delete params;
-    return false;
-  }
-
-  Serial.println("[ota] background check started");
-  return true;
-}
-
-void App::otaCheckTask(void *params) {
-  OtaCheckTaskParams *taskParams = static_cast<OtaCheckTaskParams *>(params);
-  if (taskParams == nullptr) {
-    vTaskDelete(nullptr);
-    return;
-  }
-
-  OtaCheckResult queuedResult;
-
-  const OtaUpdater::Result result =
-      OtaUpdater().checkOnly(taskParams->config, nullptr, nullptr);
-  queuedResult.code = result.code;
-  copyOtaLabel(queuedResult.currentVersion, sizeof(queuedResult.currentVersion),
-               result.currentVersion);
-  copyOtaLabel(queuedResult.latestVersion, sizeof(queuedResult.latestVersion),
-               result.latestVersion);
-  copyOtaLabel(queuedResult.summary, sizeof(queuedResult.summary), result.summary);
-  copyOtaLabel(queuedResult.detail, sizeof(queuedResult.detail), result.detail);
-
-  if (taskParams->resultQueue != nullptr) {
-    xQueueOverwrite(taskParams->resultQueue, &queuedResult);
-  }
-
-  delete taskParams;
-  vTaskDelete(nullptr);
-}
-
-void App::pollOtaCheckResult(uint32_t nowMs) {
-  (void)nowMs;
-  if (otaCheckQueue_ == nullptr) {
-    return;
-  }
-
-  OtaCheckResult result;
-  while (xQueueReceive(otaCheckQueue_, &result, 0) == pdTRUE) {
-    otaCheckInProgress_ = false;
-    applyStateCpuFrequency();
-    Serial.printf("[ota] background result code=%u current=%s latest=%s summary=%s detail=%s\n",
-                  static_cast<unsigned int>(result.code), result.currentVersion,
-                  result.latestVersion, result.summary, result.detail);
-
-    if (result.code == OtaUpdater::ResultCode::UpdateAvailable) {
-      pendingUpdateCurrentVersion_ = String(result.currentVersion);
-      pendingUpdateNewVersion_ = String(result.latestVersion);
-      otaUpdatePromptPending_ = true;
-    }
-  }
+  ota_.startBackgroundCheck(otaConfig);
 }
 
 bool App::updateConfirmCanOpen() const {
-  return otaUpdatePromptPending_ && !pendingBootBookLoad_ && state_ == AppState::Paused;
+  return ota_.updatePromptPending() && !pendingBootBookLoad_ && state_ == AppState::Paused;
 }
 
 void App::maybeOpenUpdateConfirm(uint32_t nowMs) {
@@ -4413,89 +3880,14 @@ void App::maybeOpenUpdateConfirm(uint32_t nowMs) {
     return;
   }
 
-  otaUpdatePromptPending_ = false;
+  ota_.clearUpdatePrompt();
   setState(AppState::Menu, nowMs);
   openUpdateConfirm();
 }
 
-bool App::blockNetworkActionForOtaCheck(const String &title, uint32_t nowMs) {
-  pollOtaCheckResult(nowMs);
-  if (!otaCheckInProgress_) {
-    return false;
-  }
-
-  display_.renderStatus(title, "OTA check running", "Try again soon");
-  delay(1200);
-  renderMenu();
-  return true;
-}
-
-void App::runFirmwareUpdate(const OtaUpdater::Config &config, bool automatic, uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("OTA", nowMs)) {
-    return;
-  }
-
-  if (!automatic) {
-    otaUpdatePromptPending_ = false;
-  }
-
-  if (!otaUpdater_.isConfigured(config)) {
-    if (!automatic) {
-      display_.renderStatus("OTA", "Wi-Fi not set", "Settings -> Wi-Fi");
-      delay(1600);
-      if (state_ == AppState::Menu &&
-          (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-           menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
-           menuScreen_ == MenuScreen::WifiSettings)) {
-        rebuildSettingsMenuItems();
-        renderSettings();
-      } else {
-        menuScreen_ = MenuScreen::Main;
-        setState(AppState::Paused, nowMs);
-      }
-    }
-    return;
-  }
-
-  saveReadingPosition(true);
-  const OtaUpdater::Result result =
-      otaUpdater_.checkAndInstall(config, &App::handleStorageStatus, this);
-
-  Serial.printf("[ota] code=%u current=%s latest=%s summary=%s detail=%s\n",
-                static_cast<unsigned int>(result.code), result.currentVersion.c_str(),
-                result.latestVersion.c_str(), result.summary.c_str(), result.detail.c_str());
-
-  if (result.rebootRequired) {
-    display_.renderStatus("OTA", "Restarting", result.latestVersion);
-    delay(300);
-    ESP.restart();
-    return;
-  }
-
-  if (automatic) {
-    return;
-  }
-
-  const String line2 = result.detail.isEmpty() ? result.currentVersion : result.detail;
-  display_.renderStatus("OTA", result.summary, line2);
-  delay(1600);
-  if (state_ == AppState::Menu &&
-      (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
-       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
-       menuScreen_ == MenuScreen::WifiSettings)) {
-    rebuildSettingsMenuItems();
-    renderSettings();
-  } else {
-    menuScreen_ = MenuScreen::Main;
-    setState(AppState::Paused, nowMs);
-  }
-}
-
 void App::runRssFeedCheck(uint32_t nowMs) {
   (void)nowMs;
-  if (blockNetworkActionForOtaCheck("RSS", nowMs)) {
+  if (ota_.blockForCheck("RSS", nowMs)) {
     return;
   }
 
@@ -4520,14 +3912,6 @@ void App::runRssFeedCheck(uint32_t nowMs) {
 String App::pacingDelayLabel(uint16_t delayMs) const { return String(delayMs) + " ms"; }
 
 String App::firmwareUpdateMenuLabel() const { return "Firmware update"; }
-
-String App::firmwareVersionLabel() const {
-#ifdef RSVP_FIRMWARE_VERSION
-  return String(RSVP_FIRMWARE_VERSION);
-#else
-  return "dev";
-#endif
-}
 
 String App::uiText(UiText key) const { return Localization::text(uiLanguage_, key); }
 
@@ -4677,9 +4061,9 @@ void App::openBookPicker(bool articlesOnly) {
                      }
 
                      const uint32_t leftRecent =
-                         bookRecentSequence(storage_.bookPath(leftIndex));
+                         library_.recentSequence(storage_.bookPath(leftIndex));
                      const uint32_t rightRecent =
-                         bookRecentSequence(storage_.bookPath(rightIndex));
+                         library_.recentSequence(storage_.bookPath(rightIndex));
                      const bool leftHasRecent = leftRecent > 0;
                      const bool rightHasRecent = rightRecent > 0;
                      if (leftHasRecent != rightHasRecent) {
@@ -4863,7 +4247,7 @@ void App::selectUpdateConfirmItem(uint32_t nowMs) {
   }
 
   Serial.println("[ota] update confirmed by user");
-  runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
+  ota_.runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
 }
 
 void App::openPowerOffConfirm(uint32_t nowMs) {
@@ -4906,7 +4290,7 @@ void App::renderPowerOffConfirm() {
 }
 
 void App::enterCompanionSync(uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("Sync", nowMs)) {
+  if (ota_.blockForCheck("Sync", nowMs)) {
     return;
   }
 
@@ -5030,7 +4414,7 @@ void App::enterUsbTransfer(uint32_t nowMs) {
     display_.renderStatus("USB", "SD not ready", "Returning");
     storageReady_ = storage_.begin();
     if (storageReady_ && usingStorageBook_ && !currentBookPath_.isEmpty()) {
-      const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+      const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
       if (refreshedBookIndex >= 0 &&
           loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
                           false)) {
@@ -5076,7 +4460,7 @@ void App::exitUsbTransfer(uint32_t nowMs) {
 
   storageReady_ = storage_.begin();
   if (storageReady_) {
-    const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+    const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
     if (refreshedBookIndex >= 0) {
       const size_t resumeIndex = reader_.currentIndex();
       if (loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
@@ -5126,7 +4510,7 @@ void App::enterStandby(uint32_t nowMs) {
   batteryWarningOverlayVisible_ = false;
   standbyEnteredMs_ = nowMs;
   standbyButtonsReleased_ = false;
-  lastStandbyFrameMs_ = 0;
+  screensaver_.resetFrameTimer();
   setState(AppState::Standby, nowMs);
   Serial.println("[app] standby screensaver started");
 }
@@ -5152,10 +4536,7 @@ void App::exitStandby(uint32_t nowMs) {
   }
 
   Serial.println("[app] leaving standby");
-  if (standbyScreenOffActive_) {
-    display_.wakeFromSleep();
-    standbyScreenOffActive_ = false;
-  }
+  screensaver_.wakeIfScreenOff();
   setState(nextState, nowMs);
 }
 
@@ -5238,7 +4619,7 @@ void App::enterPowerSaving(uint32_t nowMs) {
     touch_.cancel();
   }
   display_.prepareForSleep();
-  standbyScreenOffActive_ = false;  // clear any leftover screensaver-standby flag
+  screensaver_.clearScreenOff();  // clear any leftover screensaver-standby flag
 
   powerSaveEnteredMs_ = nowMs;
   setState(AppState::PowerSaving, nowMs);
@@ -5299,406 +4680,6 @@ String App::deepStandbyDelayLabel() const {
   return "10min";
 }
 #endif  // BOARD_AMOLED_18
-
-void App::seedStandbyScreensaver(uint32_t nowMs) {
-  if (screensaverMode_ != ScreensaverMode::ScreenOff && standbyScreenOffActive_) {
-    display_.wakeFromSleep();
-    standbyScreenOffActive_ = false;
-  }
-
-  switch (screensaverMode_) {
-    case ScreensaverMode::Maze:
-      seedStandbyMaze(nowMs);
-      return;
-    case ScreensaverMode::Voronoi:
-      seedStandbyVoronoi(nowMs);
-      return;
-    case ScreensaverMode::ScreenOff:
-      seedStandbyScreenOff(nowMs);
-      return;
-    case ScreensaverMode::Life:
-    default:
-      seedStandbyLife(nowMs);
-      return;
-  }
-}
-
-void App::stepStandbyScreensaver(uint32_t nowMs) {
-  (void)nowMs;
-  switch (screensaverMode_) {
-    case ScreensaverMode::Maze:
-      stepStandbyMaze();
-      return;
-    case ScreensaverMode::Voronoi:
-      stepStandbyVoronoi();
-      return;
-    case ScreensaverMode::ScreenOff:
-      return;
-    case ScreensaverMode::Life:
-    default:
-      stepStandbyLife();
-      return;
-  }
-}
-
-void App::seedStandbyLife(uint32_t nowMs) {
-  const size_t cellCount =
-      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
-  standbyLifeCells_.assign(packedLifeWordCount(cellCount), 0);
-  standbyLifeNextCells_.assign(packedLifeWordCount(cellCount), 0);
-  standbyScreensaverDimCells_.clear();
-  standbyMazeVisited_.clear();
-  standbyMazeStack_.clear();
-  standbyVoronoiX_.clear();
-  standbyVoronoiY_.clear();
-  standbyVoronoiDx_.clear();
-  standbyVoronoiDy_.clear();
-  standbyLifeGeneration_ = 0;
-
-  standbyScreensaverRng_ =
-      nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2654435761UL) ^
-      (static_cast<uint32_t>(batteryDisplayedPercent_) << 24);
-  for (size_t i = 0; i < cellCount; ++i) {
-    setPackedLifeCell(standbyLifeCells_, i, (advanceStandbyRng(standbyScreensaverRng_) >> 24) < 12);
-  }
-
-  clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 kLifeGosperGliderGun,
-                                 sizeof(kLifeGosperGliderGun) / sizeof(kLifeGosperGliderGun[0]),
-                                 18, 18, 36, 9);
-  clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 kLifeGosperGliderGun,
-                                 sizeof(kLifeGosperGliderGun) / sizeof(kLifeGosperGliderGun[0]),
-                                 static_cast<int>(kStandbyLifeColumns) - 62,
-                                 static_cast<int>(kStandbyLifeRows) - 34, 36, 9);
-  clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 kLifePulsar, sizeof(kLifePulsar) / sizeof(kLifePulsar[0]),
-                                 static_cast<int>(kStandbyLifeColumns / 2) - 7,
-                                 static_cast<int>(kStandbyLifeRows / 2) - 7, 13, 13);
-  clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 kLifePentadecathlon,
-                                 sizeof(kLifePentadecathlon) / sizeof(kLifePentadecathlon[0]),
-                                 static_cast<int>(kStandbyLifeColumns / 3),
-                                 static_cast<int>(kStandbyLifeRows) - 42, 5, 10);
-  clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 kLifeLightweightSpaceship,
-                                 sizeof(kLifeLightweightSpaceship) /
-                                     sizeof(kLifeLightweightSpaceship[0]),
-                                 static_cast<int>((kStandbyLifeColumns * 2) / 3),
-                                 static_cast<int>(kStandbyLifeRows / 3), 5, 4);
-
-  for (uint8_t i = 0; i < 10; ++i) {
-    const int x =
-        static_cast<int>((advanceStandbyRng(standbyScreensaverRng_) >> 8) %
-                         std::max<uint16_t>(1, kStandbyLifeColumns - 6));
-    const int y =
-        static_cast<int>((advanceStandbyRng(standbyScreensaverRng_) >> 8) %
-                         std::max<uint16_t>(1, kStandbyLifeRows - 6));
-    clearAndStampPackedLifePattern(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                   kLifeGlider, sizeof(kLifeGlider) / sizeof(kLifeGlider[0]), x,
-                                   y, 3, 3);
-  }
-}
-
-void App::stepStandbyLife() {
-  const size_t cellCount =
-      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
-  const size_t wordCount = packedLifeWordCount(cellCount);
-  if (standbyLifeCells_.size() != wordCount || standbyLifeNextCells_.size() != wordCount) {
-    seedStandbyLife(millis());
-    return;
-  }
-
-  std::fill(standbyLifeNextCells_.begin(), standbyLifeNextCells_.end(), 0);
-  size_t aliveCount = 0;
-  for (uint16_t y = 0; y < kStandbyLifeRows; ++y) {
-    for (uint16_t x = 0; x < kStandbyLifeColumns; ++x) {
-      uint8_t neighbours = 0;
-      for (int8_t dy = -1; dy <= 1; ++dy) {
-        for (int8_t dx = -1; dx <= 1; ++dx) {
-          if (dx == 0 && dy == 0) {
-            continue;
-          }
-          const uint16_t nx =
-              static_cast<uint16_t>((static_cast<int>(x) + dx + kStandbyLifeColumns) %
-                                    kStandbyLifeColumns);
-          const uint16_t ny =
-              static_cast<uint16_t>((static_cast<int>(y) + dy + kStandbyLifeRows) %
-                                    kStandbyLifeRows);
-          neighbours += packedLifeCellAlive(
-              standbyLifeCells_, static_cast<size_t>(ny) * kStandbyLifeColumns + nx)
-                            ? 1
-                            : 0;
-        }
-      }
-
-      const size_t index = static_cast<size_t>(y) * kStandbyLifeColumns + x;
-      const bool alive = packedLifeCellAlive(standbyLifeCells_, index);
-      const bool nextAlive = alive ? (neighbours == 2 || neighbours == 3) : (neighbours == 3);
-      setPackedLifeCell(standbyLifeNextCells_, index, nextAlive);
-      if (nextAlive) {
-        ++aliveCount;
-      }
-    }
-  }
-
-  standbyLifeCells_.swap(standbyLifeNextCells_);
-  ++standbyLifeGeneration_;
-  if (aliveCount == 0 || aliveCount > (cellCount * 3) / 4) {
-    seedStandbyLife(millis());
-  }
-}
-
-void App::seedStandbyMaze(uint32_t nowMs) {
-  const size_t cellCount =
-      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
-  const uint16_t mazeColumns = std::max<uint16_t>(1, (kStandbyLifeColumns - 1) / 2);
-  const uint16_t mazeRows = std::max<uint16_t>(1, (kStandbyLifeRows - 1) / 2);
-  standbyLifeCells_.assign(packedLifeWordCount(cellCount), 0);
-  standbyLifeNextCells_.assign(packedLifeWordCount(cellCount), 0);
-  standbyScreensaverDimCells_.clear();
-  standbyVoronoiX_.clear();
-  standbyVoronoiY_.clear();
-  standbyVoronoiDx_.clear();
-  standbyVoronoiDy_.clear();
-  standbyMazeVisited_.assign(static_cast<size_t>(mazeColumns) * mazeRows, 0);
-  standbyMazeStack_.clear();
-  standbyLifeGeneration_ = 0;
-  standbyScreensaverRng_ =
-      nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 2246822519UL);
-
-  const uint16_t startX = static_cast<uint16_t>((advanceStandbyRng(standbyScreensaverRng_) >> 8) %
-                                               mazeColumns);
-  const uint16_t startY = static_cast<uint16_t>((advanceStandbyRng(standbyScreensaverRng_) >> 8) %
-                                               mazeRows);
-  standbyMazeVisited_[static_cast<size_t>(startY) * mazeColumns + startX] = 1;
-  standbyMazeStack_.push_back(static_cast<uint16_t>(startY * mazeColumns + startX));
-  setPackedLifeCellAt(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                      static_cast<int>(startX) * 2 + 1, static_cast<int>(startY) * 2 + 1, true);
-}
-
-void App::stepStandbyMaze() {
-  const uint16_t mazeColumns = std::max<uint16_t>(1, (kStandbyLifeColumns - 1) / 2);
-  const uint16_t mazeRows = std::max<uint16_t>(1, (kStandbyLifeRows - 1) / 2);
-  const size_t mazeCellCount = static_cast<size_t>(mazeColumns) * mazeRows;
-  if (standbyMazeVisited_.size() != mazeCellCount || standbyMazeStack_.empty()) {
-    if (standbyMazeStack_.empty() && standbyLifeGeneration_ < 600) {
-      ++standbyLifeGeneration_;
-      return;
-    }
-    seedStandbyMaze(millis());
-    return;
-  }
-
-  constexpr uint8_t kMazeStepsPerFrame = 32;
-  for (uint8_t step = 0; step < kMazeStepsPerFrame && !standbyMazeStack_.empty(); ++step) {
-    const uint16_t current = standbyMazeStack_.back();
-    const uint16_t cx = current % mazeColumns;
-    const uint16_t cy = current / mazeColumns;
-    uint16_t candidates[4];
-    uint8_t candidateCount = 0;
-
-    auto addCandidate = [&](int nx, int ny) {
-      if (nx < 0 || ny < 0 || nx >= static_cast<int>(mazeColumns) ||
-          ny >= static_cast<int>(mazeRows)) {
-        return;
-      }
-      const uint16_t encoded = static_cast<uint16_t>(ny * mazeColumns + nx);
-      if (standbyMazeVisited_[encoded] == 0) {
-        candidates[candidateCount++] = encoded;
-      }
-    };
-
-    addCandidate(static_cast<int>(cx) + 1, cy);
-    addCandidate(static_cast<int>(cx) - 1, cy);
-    addCandidate(cx, static_cast<int>(cy) + 1);
-    addCandidate(cx, static_cast<int>(cy) - 1);
-
-    if (candidateCount == 0) {
-      standbyMazeStack_.pop_back();
-      continue;
-    }
-
-    const uint16_t next = candidates[(advanceStandbyRng(standbyScreensaverRng_) >> 16) %
-                                     candidateCount];
-    const uint16_t nx = next % mazeColumns;
-    const uint16_t ny = next / mazeColumns;
-    standbyMazeVisited_[next] = 1;
-    standbyMazeStack_.push_back(next);
-
-    const int displayCx = static_cast<int>(cx) * 2 + 1;
-    const int displayCy = static_cast<int>(cy) * 2 + 1;
-    const int displayNx = static_cast<int>(nx) * 2 + 1;
-    const int displayNy = static_cast<int>(ny) * 2 + 1;
-    setPackedLifeCellAt(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows, displayNx,
-                        displayNy, true);
-    setPackedLifeCellAt(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                        (displayCx + displayNx) / 2, (displayCy + displayNy) / 2, true);
-  }
-
-  if (standbyMazeStack_.empty()) {
-    standbyLifeGeneration_ = 0;
-  } else {
-    ++standbyLifeGeneration_;
-  }
-}
-
-void App::seedStandbyVoronoi(uint32_t nowMs) {
-  const size_t cellCount =
-      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
-  const size_t wordCount = packedLifeWordCount(cellCount);
-  standbyLifeCells_.assign(wordCount, 0);
-  standbyLifeNextCells_.assign(wordCount, 0);
-  standbyScreensaverDimCells_.assign(wordCount, 0);
-  standbyMazeVisited_.clear();
-  standbyMazeStack_.clear();
-  standbyLifeGeneration_ = 0;
-  standbyScreensaverRng_ =
-      nowMs ^ micros() ^ (static_cast<uint32_t>(reader_.currentIndex() + 1) * 3266489917UL) ^
-      0x51a7f00dUL;
-
-  constexpr size_t kVoronoiSiteCount = 15;
-  standbyVoronoiX_.assign(kVoronoiSiteCount, 0);
-  standbyVoronoiY_.assign(kVoronoiSiteCount, 0);
-  standbyVoronoiDx_.assign(kVoronoiSiteCount, 0);
-  standbyVoronoiDy_.assign(kVoronoiSiteCount, 0);
-  for (size_t i = 0; i < kVoronoiSiteCount; ++i) {
-    standbyVoronoiX_[i] = static_cast<int16_t>(
-        ((advanceStandbyRng(standbyScreensaverRng_) >> 8) % kStandbyLifeColumns) * 16);
-    standbyVoronoiY_[i] = static_cast<int16_t>(
-        ((advanceStandbyRng(standbyScreensaverRng_) >> 8) % kStandbyLifeRows) * 16);
-
-    const int16_t dx =
-        static_cast<int16_t>(4 + ((advanceStandbyRng(standbyScreensaverRng_) >> 24) % 7));
-    const int16_t dy =
-        static_cast<int16_t>(3 + ((advanceStandbyRng(standbyScreensaverRng_) >> 24) % 6));
-    standbyVoronoiDx_[i] =
-        (advanceStandbyRng(standbyScreensaverRng_) & 1U) != 0 ? dx : static_cast<int16_t>(-dx);
-    standbyVoronoiDy_[i] =
-        (advanceStandbyRng(standbyScreensaverRng_) & 1U) != 0 ? dy : static_cast<int16_t>(-dy);
-  }
-  renderStandbyVoronoi();
-}
-
-void App::renderStandbyVoronoi() {
-  const size_t cellCount =
-      static_cast<size_t>(kStandbyLifeColumns) * static_cast<size_t>(kStandbyLifeRows);
-  const size_t wordCount = packedLifeWordCount(cellCount);
-  standbyLifeCells_.assign(wordCount, 0);
-  standbyScreensaverDimCells_.assign(wordCount, 0);
-  if (standbyVoronoiX_.empty()) {
-    return;
-  }
-
-  for (uint16_t y = 0; y < kStandbyLifeRows; ++y) {
-    const int32_t cellY = static_cast<int32_t>(y) * 16 + 8;
-    for (uint16_t x = 0; x < kStandbyLifeColumns; ++x) {
-      const int32_t cellX = static_cast<int32_t>(x) * 16 + 8;
-      int32_t nearest = INT32_MAX;
-      int32_t secondNearest = INT32_MAX;
-      for (size_t i = 0; i < standbyVoronoiX_.size(); ++i) {
-        const int32_t dx = cellX - standbyVoronoiX_[i];
-        const int32_t dy = cellY - standbyVoronoiY_[i];
-        const int32_t distance = dx * dx + dy * dy;
-        if (distance < nearest) {
-          secondNearest = nearest;
-          nearest = distance;
-        } else if (distance < secondNearest) {
-          secondNearest = distance;
-        }
-      }
-
-      const size_t index = static_cast<size_t>(y) * kStandbyLifeColumns + x;
-      const int32_t gap = secondNearest - nearest;
-      if (nearest < 1200 || gap < 190) {
-        setPackedLifeCell(standbyLifeCells_, index, true);
-      } else if (gap < 580 + nearest / 180) {
-        setPackedLifeCell(standbyScreensaverDimCells_, index, true);
-      }
-    }
-  }
-}
-
-void App::stepStandbyVoronoi() {
-  constexpr size_t kVoronoiSiteCount = 15;
-  if (standbyVoronoiX_.size() != kVoronoiSiteCount ||
-      standbyVoronoiY_.size() != kVoronoiSiteCount ||
-      standbyVoronoiDx_.size() != kVoronoiSiteCount ||
-      standbyVoronoiDy_.size() != kVoronoiSiteCount) {
-    seedStandbyVoronoi(millis());
-    return;
-  }
-
-  const int16_t maxX = static_cast<int16_t>((kStandbyLifeColumns - 1) * 16);
-  const int16_t maxY = static_cast<int16_t>((kStandbyLifeRows - 1) * 16);
-  for (size_t i = 0; i < standbyVoronoiX_.size(); ++i) {
-    int16_t nextX = static_cast<int16_t>(standbyVoronoiX_[i] + standbyVoronoiDx_[i]);
-    int16_t nextY = static_cast<int16_t>(standbyVoronoiY_[i] + standbyVoronoiDy_[i]);
-    if (nextX < 0 || nextX > maxX) {
-      standbyVoronoiDx_[i] = static_cast<int16_t>(-standbyVoronoiDx_[i]);
-      nextX = std::max<int16_t>(0, std::min<int16_t>(maxX, nextX));
-    }
-    if (nextY < 0 || nextY > maxY) {
-      standbyVoronoiDy_[i] = static_cast<int16_t>(-standbyVoronoiDy_[i]);
-      nextY = std::max<int16_t>(0, std::min<int16_t>(maxY, nextY));
-    }
-    standbyVoronoiX_[i] = nextX;
-    standbyVoronoiY_[i] = nextY;
-  }
-
-  ++standbyLifeGeneration_;
-  if (standbyLifeGeneration_ > 2400) {
-    seedStandbyVoronoi(millis());
-    return;
-  }
-  renderStandbyVoronoi();
-}
-
-void App::seedStandbyScreenOff(uint32_t nowMs) {
-  (void)nowMs;
-  standbyLifeCells_.clear();
-  standbyLifeNextCells_.clear();
-  standbyScreensaverDimCells_.clear();
-  standbyMazeVisited_.clear();
-  standbyMazeStack_.clear();
-  standbyVoronoiX_.clear();
-  standbyVoronoiY_.clear();
-  standbyVoronoiDx_.clear();
-  standbyVoronoiDy_.clear();
-  standbyLifeGeneration_ = 0;
-  standbyScreenOffActive_ = true;
-  display_.prepareForSleep();
-}
-
-void App::updateStandbyScreensaver(uint32_t nowMs, bool force) {
-  if (state_ != AppState::Standby) {
-    return;
-  }
-
-  if (screensaverMode_ == ScreensaverMode::ScreenOff) {
-    if (!standbyScreenOffActive_) {
-      seedStandbyScreenOff(nowMs);
-    }
-    lastStandbyFrameMs_ = nowMs;
-    return;
-  }
-
-  if (!force && nowMs - lastStandbyFrameMs_ < kStandbyFrameMs) {
-    return;
-  }
-
-  if (!force) {
-    stepStandbyScreensaver(nowMs);
-  } else if (standbyLifeCells_.empty()) {
-    seedStandbyScreensaver(nowMs);
-  }
-
-  lastStandbyFrameMs_ = nowMs;
-  display_.renderLifeScreensaver(standbyLifeCells_, kStandbyLifeColumns, kStandbyLifeRows,
-                                 standbyLifeGeneration_,
-                                 standbyScreensaverDimCells_.empty() ? nullptr
-                                                                      : &standbyScreensaverDimCells_);
-}
 
 void App::enterPowerOff(uint32_t nowMs) {
   if (powerOffStarted_) {
@@ -5805,7 +4786,7 @@ void App::wakeFromSleep() {
 
   if (storageReady_ && usingStorageBook_ && !currentBookPath_.isEmpty()) {
     const size_t resumeIndex = reader_.currentIndex();
-    const int refreshedBookIndex = findBookIndexByPath(currentBookPath_);
+    const int refreshedBookIndex = library_.findIndexByPath(currentBookPath_);
     if (refreshedBookIndex >= 0 &&
         loadBookAtIndex(static_cast<size_t>(refreshedBookIndex), nowMs, false, false, false,
                         false)) {
@@ -5831,7 +4812,7 @@ bool App::restoreSavedBook(uint32_t nowMs) {
     return false;
   }
 
-  const int bookIndex = findBookIndexByPath(savedPath);
+  const int bookIndex = library_.findIndexByPath(savedPath);
   if (bookIndex < 0) {
     Serial.printf("[app] saved book not found: %s\n", savedPath.c_str());
     return false;
@@ -5856,7 +4837,7 @@ bool App::prepareBootBookLoad() {
 
   const String savedPath = preferences_.getString(kPrefBookPath, "");
   if (!savedPath.isEmpty()) {
-    const int savedBookIndex = findBookIndexByPath(savedPath);
+    const int savedBookIndex = library_.findIndexByPath(savedPath);
     if (savedBookIndex >= 0) {
       pendingBootBookIndex_ = static_cast<size_t>(savedBookIndex);
       pendingBootBookLegacyFallback_ = true;
@@ -5917,12 +4898,10 @@ void App::saveReadingPosition(bool force) {
   }
 
   preferences_.putString(kPrefBookPath, currentBookPath_);
-  preferences_.putUInt(bookPositionKey(currentBookPath_).c_str(), static_cast<uint32_t>(wordIndex));
-  preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
-                       static_cast<uint32_t>(reader_.wordCount()));
-  preferences_.putUInt(kPrefLegacyWordIndex, static_cast<uint32_t>(wordIndex));
+  library_.rememberPosition(currentBookPath_, static_cast<uint32_t>(wordIndex));
+  library_.rememberWordCount(currentBookPath_, static_cast<uint32_t>(reader_.wordCount()));
   preferences_.putUShort(kPrefWpm, reader_.wpm());
-  markBookRecent(currentBookPath_);
+  library_.markRecent(currentBookPath_);
   lastSavedWordIndex_ = wordIndex;
   Serial.printf("[app] saved position word=%u book=%s\n", static_cast<unsigned int>(wordIndex),
                 currentBookPath_.c_str());
@@ -5946,7 +4925,7 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   renderStorageStatus("Opening book", loadedTitle.c_str(), "Loading word cache", 70);
 
   const bool keepingExistingTimeCache =
-      !rebuildTimeEstimate && timeEstimateCacheValid_ && currentBookPath_ == loadedPath;
+      !rebuildTimeEstimate && timeEstimate_.cacheValid() && currentBookPath_ == loadedPath;
   reader_.setWordSource(&activeBookStore_, nowMs);
   if (reader_.wordCount() == 0 || reader_.currentWord().isEmpty()) {
     Serial.printf("[app] failed to read first indexed word from %s\n", loadedPath.c_str());
@@ -5968,14 +4947,13 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   playingStartedMs_ = nowMs;
   usingStorageBook_ = true;
   preferences_.putString(kPrefBookPath, currentBookPath_);
-  preferences_.putUInt(bookWordCountKey(currentBookPath_).c_str(),
-                       static_cast<uint32_t>(reader_.wordCount()));
-  markBookRecent(currentBookPath_);
+  library_.rememberWordCount(currentBookPath_, static_cast<uint32_t>(reader_.wordCount()));
+  library_.markRecent(currentBookPath_);
 
   // Re-opening a finished book restarts it from the beginning (its saved
   // position is the last word, which would otherwise instantly re-finish).
-  if (bookIsFinished(currentBookPath_)) {
-    setBookFinished(currentBookPath_, false);
+  if (library_.isFinished(currentBookPath_)) {
+    library_.setFinished(currentBookPath_, false);
     reader_.seekTo(0);
     lastSavedWordIndex_ = reader_.currentIndex();
     saveReadingPosition(true);
@@ -5983,21 +4961,21 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
                   currentBookPath_.c_str());
   } else {
     const uint32_t savedWordIndex =
-        savedWordIndexForBook(currentBookPath_, allowLegacyPositionFallback);
-    if (savedWordIndex != kNoSavedWordIndex) {
+        library_.savedWordIndex(currentBookPath_, allowLegacyPositionFallback);
+    if (savedWordIndex != BookLibraryStore::kNoSavedWordIndex) {
       renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Restoring position", 78);
       reader_.seekTo(savedWordIndex);
       lastSavedWordIndex_ = reader_.currentIndex();
-      Serial.printf("[app] restored book position word=%u key=%s\n",
+      Serial.printf("[app] restored book position word=%u book=%s\n",
                     static_cast<unsigned int>(reader_.currentIndex()),
-                    bookPositionKey(currentBookPath_).c_str());
+                    currentBookPath_.c_str());
     }
   }
 
   if (rebuildTimeEstimate) {
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
   } else if (!keepingExistingTimeCache) {
-    invalidateTimeEstimateCache();
+    timeEstimate_.invalidate();
   } else {
     renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Using cached estimate", 92);
   }
@@ -6011,124 +4989,18 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   return true;
 }
 
-String App::bookPositionKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "p%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookWordCountKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "c%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookRecentKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "r%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-String App::bookFinishedKey(const String &bookPath) const {
-  char key[10];
-  std::snprintf(key, sizeof(key), "f%08lx", static_cast<unsigned long>(hashBookPath(bookPath)));
-  return String(key);
-}
-
-void App::setBookFinished(const String &bookPath, bool finished) {
-  if (bookPath.isEmpty()) {
-    return;
-  }
-  const String key = bookFinishedKey(bookPath);
-  if (finished) {
-    preferences_.putBool(key.c_str(), true);
-  } else if (preferences_.isKey(key.c_str())) {
-    preferences_.remove(key.c_str());
-  }
-}
-
-bool App::bookIsFinished(const String &bookPath) {
-  if (bookPath.isEmpty()) {
-    return false;
-  }
-  return preferences_.getBool(bookFinishedKey(bookPath).c_str(), false);
-}
-
-uint32_t App::nextRecentSequence() {
-  uint32_t sequence = preferences_.getUInt(kPrefRecentSeq, 0);
-  if (sequence == 0xFFFFFFFEUL) {
-    sequence = 0;
-  }
-  ++sequence;
-  preferences_.putUInt(kPrefRecentSeq, sequence);
-  return sequence;
-}
-
-uint32_t App::bookRecentSequence(const String &bookPath) {
-  return preferences_.getUInt(bookRecentKey(bookPath).c_str(), 0);
-}
-
-void App::markBookRecent(const String &bookPath) {
-  if (bookPath.isEmpty()) {
-    return;
-  }
-
-  preferences_.putUInt(bookRecentKey(bookPath).c_str(), nextRecentSequence());
-}
-
-uint32_t App::savedWordIndexForBook(const String &bookPath, bool allowLegacyFallback) {
-  const String key = bookPositionKey(bookPath);
-  if (preferences_.isKey(key.c_str())) {
-    return preferences_.getUInt(key.c_str(), 0);
-  }
-
-  if (allowLegacyFallback && preferences_.isKey(kPrefLegacyWordIndex)) {
-    const uint32_t legacyWordIndex = preferences_.getUInt(kPrefLegacyWordIndex, 0);
-    preferences_.putUInt(key.c_str(), legacyWordIndex);
-    Serial.printf("[app] migrated legacy position word=%u to key=%s\n",
-                  static_cast<unsigned int>(legacyWordIndex), key.c_str());
-    return legacyWordIndex;
-  }
-
-  return kNoSavedWordIndex;
-}
-
 bool App::bookProgressPercent(size_t bookIndex, uint8_t &percent) {
-  size_t wordIndex = 0;
-  size_t wordCount = 0;
-
   if (usingStorageBook_ && bookIndex == currentBookIndex_) {
-    wordIndex = reader_.currentIndex();
-    wordCount = reader_.wordCount();
-  } else {
-    const String path = storage_.bookPath(bookIndex);
-    const String positionKey = bookPositionKey(path);
-    const String countKey = bookWordCountKey(path);
-    if (!preferences_.isKey(positionKey.c_str()) || !preferences_.isKey(countKey.c_str())) {
+    const size_t wordCount = reader_.wordCount();
+    if (wordCount <= 1) {
       return false;
     }
-
-    wordIndex = preferences_.getUInt(positionKey.c_str(), 0);
-    wordCount = preferences_.getUInt(countKey.c_str(), 0);
+    const size_t wordIndex = std::min(reader_.currentIndex(), wordCount - 1);
+    const size_t progress = (wordIndex * static_cast<size_t>(100)) / (wordCount - 1);
+    percent = static_cast<uint8_t>(std::min(static_cast<size_t>(100), progress));
+    return true;
   }
-
-  if (wordCount <= 1) {
-    return false;
-  }
-
-  wordIndex = std::min(wordIndex, wordCount - 1);
-  const size_t progress = (wordIndex * static_cast<size_t>(100)) / (wordCount - 1);
-  percent = static_cast<uint8_t>(std::min(static_cast<size_t>(100), progress));
-  return true;
-}
-
-int App::findBookIndexByPath(const String &path) const {
-  for (size_t i = 0; i < storage_.bookCount(); ++i) {
-    if (storage_.bookPath(i) == path) {
-      return static_cast<int>(i);
-    }
-  }
-  return -1;
+  return library_.savedProgressPercent(storage_.bookPath(bookIndex), percent);
 }
 
 void App::renderMenu() {
@@ -6144,7 +5016,7 @@ void App::renderMenu() {
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     renderWifiNetworks();
   } else if (menuScreen_ == MenuScreen::TextEntry) {
-    renderTextEntry();
+    textEntry_.render();
   } else if (menuScreen_ == MenuScreen::TypographyTuning) {
     renderTypographyTuning();
   } else if (menuScreen_ == MenuScreen::BookPicker) {
@@ -6247,7 +5119,7 @@ void App::renderBookPicker() {
 void App::enterBookFinished(uint32_t nowMs) {
   // Persist the final position and the read flag before showing the summary.
   saveReadingPosition(true);
-  setBookFinished(currentBookPath_, true);
+  library_.setFinished(currentBookPath_, true);
   ++lifetimeBooksFinished_;
   lifetimeStatsDirty_ = true;
   saveLifetimeStats();
@@ -6304,36 +5176,12 @@ void App::loadLifetimeStats() {
   lifetimeStatsDirty_ = false;
 }
 
-bool App::localNow(BoardConfig::RtcDateTime &outLocal, int32_t &outDayNumber) const {
-  // RTC stores UTC; apply the timezone offset here so the offset can change
-  // without rewriting the clock.
-  BoardConfig::RtcDateTime utc;
-  if (!BoardConfig::rtcRead(utc) || !utc.valid) {
-    return false;
-  }
-  int64_t epoch = static_cast<int64_t>(civilDayNumber(utc.year, utc.month, utc.day)) * 86400 +
-                  utc.hour * 3600 + utc.minute * 60 + utc.second;
-  epoch += static_cast<int64_t>(timezoneOffsetMinutes_) * 60;
-  outDayNumber = static_cast<int32_t>(floorDiv(epoch, 86400));
-  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(outDayNumber) * 86400);
-  int y, m, d;
-  civilFromDayNumber(outDayNumber, y, m, d);
-  outLocal.year = static_cast<uint16_t>(y);
-  outLocal.month = static_cast<uint8_t>(m);
-  outLocal.day = static_cast<uint8_t>(d);
-  outLocal.hour = static_cast<uint8_t>(secOfDay / 3600);
-  outLocal.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
-  outLocal.second = static_cast<uint8_t>(secOfDay % 60);
-  outLocal.valid = true;
-  return true;
-}
-
 void App::updateStreakForToday() {
   // Count today (local) as a reading day. Needs a valid RTC; if the clock was
   // never set we silently skip until the time is available.
   BoardConfig::RtcDateTime local;
   int32_t today = 0;
-  if (!localNow(local, today)) {
+  if (!clock_.localNow(local, today)) {
     return;
   }
 
@@ -6406,14 +5254,14 @@ void App::openReadingStats() {
   // Reading streak + clock state (PCF85063 RTC, shown in local time).
   BoardConfig::RtcDateTime now;
   int32_t today = 0;
-  const bool haveClock = localNow(now, today);
+  const bool haveClock = clock_.localNow(now, today);
   if (haveClock) {
     readingStatsItems_.push_back(String("Streak: ") + String(streakDays_) + " days");
     char clockBuf[24];
     std::snprintf(clockBuf, sizeof(clockBuf), "%04u-%02u-%02u %02u:%02u", now.year, now.month,
                   now.day, now.hour, now.minute);
     readingStatsItems_.push_back(String("Clock: ") + clockBuf);
-    readingStatsItems_.push_back(String("Zone: ") + timezoneLabel());
+    readingStatsItems_.push_back(String("Zone: ") + clock_.timezoneLabel());
   } else {
     readingStatsItems_.push_back("Streak: clock not set");
     readingStatsItems_.push_back("Set in Settings > Clock");
@@ -6438,38 +5286,20 @@ void App::selectReadingStatsItem(uint32_t nowMs) {
   renderMainMenu();
 }
 
-void App::writeLocalToRtc(const BoardConfig::RtcDateTime &local) {
-  int64_t epoch = static_cast<int64_t>(civilDayNumber(local.year, local.month, local.day)) * 86400 +
-                  local.hour * 3600 + local.minute * 60 + local.second;
-  epoch -= static_cast<int64_t>(timezoneOffsetMinutes_) * 60;  // local -> UTC
-  const int32_t day = static_cast<int32_t>(floorDiv(epoch, 86400));
-  const int32_t secOfDay = static_cast<int32_t>(epoch - static_cast<int64_t>(day) * 86400);
-  int y, m, d;
-  civilFromDayNumber(day, y, m, d);
-  BoardConfig::RtcDateTime utc;
-  utc.year = static_cast<uint16_t>(y);
-  utc.month = static_cast<uint8_t>(m);
-  utc.day = static_cast<uint8_t>(d);
-  utc.hour = static_cast<uint8_t>(secOfDay / 3600);
-  utc.minute = static_cast<uint8_t>((secOfDay % 3600) / 60);
-  utc.second = static_cast<uint8_t>(secOfDay % 60);
-  utc.valid = true;
-  BoardConfig::rtcWrite(utc);
-}
-
 void App::openClockSettings() {
+  BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
   BoardConfig::RtcDateTime local;
   int32_t day = 0;
-  if (localNow(local, day)) {
-    clockEdit_ = local;
+  if (clock_.localNow(local, day)) {
+    clockEdit = local;
   } else {
-    clockEdit_ = BoardConfig::RtcDateTime{};
-    clockEdit_.year = 2026;
-    clockEdit_.month = 1;
-    clockEdit_.day = 1;
-    clockEdit_.hour = 12;
+    clockEdit = BoardConfig::RtcDateTime{};
+    clockEdit.year = 2026;
+    clockEdit.month = 1;
+    clockEdit.day = 1;
+    clockEdit.hour = 12;
   }
-  clockEdit_.second = 0;
+  clockEdit.second = 0;
   menuScreen_ = MenuScreen::SettingsClock;
   settingsSelectedIndex_ = kSettingsClockSyncIndex;
   rebuildSettingsMenuItems();
@@ -6477,6 +5307,7 @@ void App::openClockSettings() {
 }
 
 void App::selectClockSettingsItem(uint32_t nowMs) {
+  BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
       settingsSelectedIndex_ = kSettingsHomeClockIndex;
@@ -6485,11 +5316,11 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
       renderSettings();
       return;
     case kSettingsClockSyncIndex: {
-      syncClockFromNetwork(nowMs);
+      clock_.syncFromNetwork(nowMs);
       BoardConfig::RtcDateTime local;
       int32_t day = 0;
-      if (localNow(local, day)) {
-        clockEdit_ = local;
+      if (clock_.localNow(local, day)) {
+        clockEdit = local;
       }
       menuScreen_ = MenuScreen::SettingsClock;
       settingsSelectedIndex_ = kSettingsClockSyncIndex;
@@ -6498,27 +5329,24 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
       return;
     }
     case kSettingsClockTimezoneIndex:
-      // Cycle UTC offset by 1h, -12h..+14h wrapping. Applied on read -> instant.
-      timezoneOffsetMinutes_ =
-          (timezoneOffsetMinutes_ >= 14 * 60) ? -12 * 60 : timezoneOffsetMinutes_ + 60;
-      preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
+      clock_.cycleTimezone();
       break;
     case kSettingsClockYearIndex:
-      clockEdit_.year = (clockEdit_.year >= 2099) ? 2020 : clockEdit_.year + 1;
+      clockEdit.year = (clockEdit.year >= 2099) ? 2020 : clockEdit.year + 1;
       break;
     case kSettingsClockMonthIndex:
-      clockEdit_.month = (clockEdit_.month >= 12) ? 1 : clockEdit_.month + 1;
+      clockEdit.month = (clockEdit.month >= 12) ? 1 : clockEdit.month + 1;
       break;
     case kSettingsClockDayIndex:
-      clockEdit_.day = (clockEdit_.day >= daysInMonth(clockEdit_.year, clockEdit_.month))
-                           ? 1
-                           : clockEdit_.day + 1;
+      clockEdit.day = (clockEdit.day >= daysInMonth(clockEdit.year, clockEdit.month))
+                          ? 1
+                          : clockEdit.day + 1;
       break;
     case kSettingsClockHourIndex:
-      clockEdit_.hour = (clockEdit_.hour >= 23) ? 0 : clockEdit_.hour + 1;
+      clockEdit.hour = (clockEdit.hour >= 23) ? 0 : clockEdit.hour + 1;
       break;
     case kSettingsClockMinuteIndex:
-      clockEdit_.minute = (clockEdit_.minute >= 59) ? 0 : clockEdit_.minute + 1;
+      clockEdit.minute = (clockEdit.minute >= 59) ? 0 : clockEdit.minute + 1;
       break;
     default:
       return;  // status row, etc.
@@ -6527,158 +5355,15 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
   // For the manual date/time rows, keep the day valid and write the RTC live.
   if (settingsSelectedIndex_ >= kSettingsClockYearIndex &&
       settingsSelectedIndex_ <= kSettingsClockMinuteIndex) {
-    const uint8_t maxDay = daysInMonth(clockEdit_.year, clockEdit_.month);
-    if (clockEdit_.day > maxDay) {
-      clockEdit_.day = maxDay;
+    const uint8_t maxDay = daysInMonth(clockEdit.year, clockEdit.month);
+    if (clockEdit.day > maxDay) {
+      clockEdit.day = maxDay;
     }
-    writeLocalToRtc(clockEdit_);
+    clock_.writeLocalToRtc(clockEdit);
     updateStreakForToday();
   }
   rebuildSettingsMenuItems();
   renderSettings();
-}
-
-bool App::fetchTimezoneOffsetMinutes(int &outMinutes) {
-  // ip-api.com returns the UTC offset (seconds, includes DST) for the device's
-  // public IP. Free, HTTP, no key. Hand-parse the "offset" integer.
-  HTTPClient http;
-  WiFiClient client;
-  if (!http.begin(client, "http://ip-api.com/json/?fields=status,offset")) {
-    return false;
-  }
-  http.setConnectTimeout(5000);
-  http.setTimeout(5000);
-  const int code = http.GET();
-  if (code != 200) {
-    http.end();
-    return false;
-  }
-  const String body = http.getString();
-  http.end();
-
-  const int key = body.indexOf("\"offset\"");
-  if (key < 0) {
-    return false;
-  }
-  int i = body.indexOf(':', key);
-  if (i < 0) {
-    return false;
-  }
-  ++i;
-  while (i < static_cast<int>(body.length()) && (body[i] == ' ' || body[i] == '\t')) {
-    ++i;
-  }
-  int sign = 1;
-  if (i < static_cast<int>(body.length()) && (body[i] == '-' || body[i] == '+')) {
-    if (body[i] == '-') {
-      sign = -1;
-    }
-    ++i;
-  }
-  long seconds = 0;
-  bool sawDigit = false;
-  while (i < static_cast<int>(body.length()) && body[i] >= '0' && body[i] <= '9') {
-    seconds = seconds * 10 + (body[i] - '0');
-    sawDigit = true;
-    ++i;
-  }
-  if (!sawDigit) {
-    return false;
-  }
-  outMinutes = static_cast<int>((sign * seconds) / 60);
-  return true;
-}
-
-void App::syncClockFromNetwork(uint32_t nowMs) {
-  if (blockNetworkActionForOtaCheck("Clock", nowMs)) {
-    return;
-  }
-  const OtaUpdater::Config cfg = preferredOtaConfig();
-  if (cfg.wifiSsid.isEmpty()) {
-    display_.renderStatus("Clock", "No Wi-Fi set", "Configure Wi-Fi first");
-    delay(1500);
-    return;
-  }
-
-  display_.renderProgress("Clock", "Connecting Wi-Fi", cfg.wifiSsid, 10);
-  WiFi.persistent(false);
-  WiFi.setAutoReconnect(false);
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
-  uint32_t startMs = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 8000) {
-    delay(100);
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.mode(WIFI_OFF);
-    display_.renderStatus("Clock", "Wi-Fi failed", "");
-    delay(1500);
-    return;
-  }
-
-  // Auto-detect the timezone from the network (best effort); falls back to the
-  // current/manual offset if the lookup fails.
-  display_.renderProgress("Clock", "Detecting timezone", "", 45);
-  int detectedMinutes = 0;
-  if (fetchTimezoneOffsetMinutes(detectedMinutes)) {
-    timezoneOffsetMinutes_ = detectedMinutes;
-    preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
-    Serial.printf("[clock] timezone auto-detected: %s\n", timezoneLabel().c_str());
-  }
-
-  display_.renderProgress("Clock", "Getting time", "", 60);
-  // RTC stores UTC; the offset above is applied on read.
-  configTime(0, 0, "pool.ntp.org", "time.nist.gov");
-  struct tm timeInfo;
-  bool got = false;
-  startMs = millis();
-  while (millis() - startMs < 8000) {
-    if (getLocalTime(&timeInfo, 200)) {
-      got = true;
-      break;
-    }
-    delay(100);
-  }
-  WiFi.disconnect(true, false);
-  WiFi.mode(WIFI_OFF);
-
-  if (!got || timeInfo.tm_year < 120) {  // tm_year is years since 1900; <2020 = bad
-    display_.renderStatus("Clock", "Time sync failed", "");
-    delay(1500);
-    return;
-  }
-
-  BoardConfig::RtcDateTime rtc;
-  rtc.year = static_cast<uint16_t>(timeInfo.tm_year + 1900);
-  rtc.month = static_cast<uint8_t>(timeInfo.tm_mon + 1);
-  rtc.day = static_cast<uint8_t>(timeInfo.tm_mday);
-  rtc.hour = static_cast<uint8_t>(timeInfo.tm_hour);
-  rtc.minute = static_cast<uint8_t>(timeInfo.tm_min);
-  rtc.second = static_cast<uint8_t>(timeInfo.tm_sec);
-  rtc.valid = true;
-
-  if (!BoardConfig::rtcWrite(rtc)) {
-    display_.renderStatus("Clock", "RTC write failed", "");
-    delay(1500);
-    return;
-  }
-
-  updateStreakForToday();  // start the streak now that the clock is set
-
-  // Show the local time (RTC holds UTC; localNow applies the offset).
-  BoardConfig::RtcDateTime local;
-  int32_t day = 0;
-  char buf[24];
-  if (localNow(local, day)) {
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", local.year, local.month, local.day,
-                  local.hour, local.minute);
-  } else {
-    std::snprintf(buf, sizeof(buf), "%04u-%02u-%02u %02u:%02u", rtc.year, rtc.month, rtc.day,
-                  rtc.hour, rtc.minute);
-  }
-  Serial.printf("[clock] RTC set (UTC) from NTP; local %s %s\n", buf, timezoneLabel().c_str());
-  display_.renderStatus("Clock set", buf, timezoneLabel());
-  delay(1500);
 }
 
 void App::renderChapterPicker() {
@@ -6709,7 +5394,7 @@ void App::renderUpdateConfirm() {
   std::vector<String> items;
   items.reserve(UpdateConfirmItemCount + kUpdateConfirmHeaderRows);
   items.push_back("Update available");
-  items.push_back(pendingUpdateCurrentVersion_ + " -> " + pendingUpdateNewVersion_);
+  items.push_back(ota_.pendingCurrentVersion() + " -> " + ota_.pendingNewVersion());
   items.push_back("Skip for now");
   items.push_back("Update");
 
@@ -6845,7 +5530,7 @@ DisplayManager::LibraryItem App::libraryItemForBook(size_t bookIndex) {
 
   uint8_t percent = 0;
   const bool hasProgress = bookProgressPercent(bookIndex, percent);
-  if (bookIsFinished(storage_.bookPath(bookIndex))) {
+  if (library_.isFinished(storage_.bookPath(bookIndex))) {
     if (!item.subtitle.isEmpty()) {
       item.subtitle += " - ";
     }
@@ -6943,13 +5628,10 @@ String App::currentFooterMetricLabel() const {
 
   const size_t currentIndex = std::min(reader_.currentIndex(), wordCount - 1);
   size_t endIndex = wordCount;
-  const bool generatingEstimate = accurateTimeEstimateEnabled_ && timeEstimateBuildInProgress_ &&
-                                  timeEstimateBuildMatchesCurrentBook();
-  const int generatingPercent =
-      generatingEstimate
-          ? static_cast<int>((timeEstimateBuildNextBlock_ * 100UL) /
-                             std::max<size_t>(1, timeEstimateBuildBlockCount_))
-          : 0;
+  const bool generatingEstimate = timeEstimate_.accurateEstimate() &&
+                                  timeEstimate_.buildInProgress() &&
+                                  timeEstimate_.buildMatchesCurrentBook(currentBookPath_);
+  const int generatingPercent = generatingEstimate ? timeEstimate_.buildProgressPercent() : 0;
 
   if (footerMetricMode_ == FooterMetricMode::ChapterTime) {
     const size_t chapterIndex = currentChapterIndex();
@@ -6960,14 +5642,16 @@ String App::currentFooterMetricLabel() const {
       return String("CH ") + String(generatingPercent) + "% gen";
     }
     return String("CH ") +
-           formatReadingTimeRemaining(estimatedReadingTimeRemainingMs(currentIndex, endIndex));
+           TimeEstimateEngine::formatReadingTimeRemaining(
+               timeEstimate_.estimatedReadingTimeRemainingMs(currentIndex, endIndex));
   }
 
   if (generatingEstimate) {
     return String("BOOK ") + String(generatingPercent) + "% gen";
   }
   return String("BOOK ") +
-         formatReadingTimeRemaining(estimatedReadingTimeRemainingMs(currentIndex, endIndex));
+         TimeEstimateEngine::formatReadingTimeRemaining(
+             timeEstimate_.estimatedReadingTimeRemainingMs(currentIndex, endIndex));
 }
 
 String App::currentBatteryLabel() const {
@@ -7007,20 +5691,6 @@ String App::batteryLabelModeLabel() const {
     case BatteryLabelMode::Percent:
     default:
       return "Percentage";
-  }
-}
-
-String App::screensaverModeLabel() const {
-  switch (screensaverMode_) {
-    case ScreensaverMode::Maze:
-      return "Maze";
-    case ScreensaverMode::Voronoi:
-      return "Voronoi";
-    case ScreensaverMode::ScreenOff:
-      return "Screen off";
-    case ScreensaverMode::Life:
-    default:
-      return "Life";
   }
 }
 
@@ -7104,229 +5774,9 @@ String App::formatBatteryTimeRemaining(uint32_t minutes) const {
   return String(hours) + "h" + String(remainder / 10) + "0";
 }
 
-uint32_t App::estimatedReadingTimeRemainingMs(size_t startIndex, size_t endIndex) const {
-  const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0 || reader_.wpm() == 0) {
-    return 0;
-  }
-
-  startIndex = std::min(startIndex, wordCount);
-  endIndex = std::min(endIndex, wordCount);
-  if (endIndex <= startIndex) {
-    return 0;
-  }
-
-  const uint32_t baseMs = static_cast<uint32_t>(
-      (static_cast<uint64_t>(endIndex - startIndex) * 60000ULL) /
-      static_cast<uint64_t>(reader_.wpm()));
-
-  if (!accurateTimeEstimateEnabled_ || !timeEstimateCacheValid_) {
-    return baseMs;
-  }
-
-  return baseMs + estimatedPacingBonusMs(startIndex, endIndex);
-}
-
-uint32_t App::estimatedPacingBonusMs(size_t startIndex, size_t endIndex) const {
-  if (!timeEstimateCacheValid_ || wordBonusBlockPrefixSumMs_.empty() ||
-      endIndex <= startIndex) {
-    return 0;
-  }
-
-  const size_t wordCount = reader_.wordCount();
-  startIndex = std::min(startIndex, wordCount);
-  endIndex = std::min(endIndex, wordCount);
-  if (endIndex <= startIndex) {
-    return 0;
-  }
-
-  const size_t firstFullBlock = (startIndex + kTimeEstimateBlockWords - 1) /
-                                kTimeEstimateBlockWords;
-  const size_t lastFullBlockEnd = endIndex / kTimeEstimateBlockWords;
-  uint32_t bonusMs = 0;
-
-  if (firstFullBlock < lastFullBlockEnd &&
-      lastFullBlockEnd < wordBonusBlockPrefixSumMs_.size()) {
-    const size_t startPartialEnd =
-        std::min(endIndex, firstFullBlock * kTimeEstimateBlockWords);
-    for (size_t i = startIndex; i < startPartialEnd; ++i) {
-      bonusMs += reader_.wordPacingBonusMsAt(i);
-    }
-
-    bonusMs += wordBonusBlockPrefixSumMs_[lastFullBlockEnd] -
-               wordBonusBlockPrefixSumMs_[firstFullBlock];
-
-    const size_t endPartialStart = lastFullBlockEnd * kTimeEstimateBlockWords;
-    for (size_t i = endPartialStart; i < endIndex; ++i) {
-      bonusMs += reader_.wordPacingBonusMsAt(i);
-    }
-    return bonusMs;
-  }
-
-  for (size_t i = startIndex; i < endIndex; ++i) {
-    bonusMs += reader_.wordPacingBonusMsAt(i);
-  }
-  return bonusMs;
-}
-
-void App::invalidateTimeEstimateCache() {
-  cancelTimeEstimateBuild();
-  timeEstimateCacheValid_ = false;
-  std::vector<uint32_t>().swap(wordBonusBlockPrefixSumMs_);
-}
-
-void App::rebuildTimeEstimateCache() {
-  invalidateTimeEstimateCache();
-  pacingCacheDirty_ = false;
-  if (!accurateTimeEstimateEnabled_) {
-    if (!currentBookTitle_.isEmpty()) {
-      renderStorageStatus("Reading time", currentBookTitle_.c_str(), "Fast estimate enabled",
-                          100);
-    }
-    return;
-  }
-
-  const size_t n = reader_.wordCount();
-  if (n == 0) {
-    return;
-  }
-
-  const String label = currentBookTitle_.isEmpty() ? String("Current book") : currentBookTitle_;
-  timeEstimateBuildWordCount_ = n;
-  timeEstimateBuildBlockCount_ =
-      (timeEstimateBuildWordCount_ + kTimeEstimateBlockWords - 1) / kTimeEstimateBlockWords;
-  if (timeEstimateBuildBlockCount_ == 0) {
-    return;
-  }
-
-  wordBonusBlockPrefixSumMs_.assign(timeEstimateBuildBlockCount_ + 1, 0);
-  timeEstimateBuildBookPath_ = currentBookPath_;
-  timeEstimateBuildNextBlock_ = 0;
-  timeEstimateBuildRunningMs_ = 0;
-  timeEstimateBuildStartedMs_ = millis();
-  timeEstimateBuildLastLogMs_ = timeEstimateBuildStartedMs_;
-  timeEstimateBuildInProgress_ = true;
-
-  const String detail = String(static_cast<unsigned int>(n)) + " words in background";
-  renderStorageStatus("Reading time", label.c_str(), detail.c_str(), 0);
-  Serial.printf("[time-est] background build started words=%u blocks=%u book=%s\n",
-                static_cast<unsigned int>(timeEstimateBuildWordCount_),
-                static_cast<unsigned int>(timeEstimateBuildBlockCount_),
-                currentBookPath_.c_str());
-}
-
-void App::cancelTimeEstimateBuild() {
-  timeEstimateBuildInProgress_ = false;
-  timeEstimateBuildBookPath_ = "";
-  timeEstimateBuildWordCount_ = 0;
-  timeEstimateBuildBlockCount_ = 0;
-  timeEstimateBuildNextBlock_ = 0;
-  timeEstimateBuildRunningMs_ = 0;
-  timeEstimateBuildStartedMs_ = 0;
-  timeEstimateBuildLastLogMs_ = 0;
-}
-
-bool App::timeEstimateBuildMatchesCurrentBook() const {
-  return timeEstimateBuildInProgress_ && timeEstimateBuildBookPath_ == currentBookPath_ &&
-         timeEstimateBuildWordCount_ == reader_.wordCount();
-}
-
-void App::updateTimeEstimateBuild(uint32_t nowMs) {
-  if (!timeEstimateBuildInProgress_) {
-    return;
-  }
-
-  if (!accurateTimeEstimateEnabled_ || !timeEstimateBuildMatchesCurrentBook()) {
-    Serial.println("[time-est] background build cancelled");
-    invalidateTimeEstimateCache();
-    return;
-  }
-
-  if (state_ == AppState::Playing || state_ == AppState::CompanionSync ||
-      state_ == AppState::UsbTransfer || state_ == AppState::Standby ||
-      state_ == AppState::Sleeping) {
-    return;
-  }
-
-  size_t processedBlocks = 0;
-  while (timeEstimateBuildNextBlock_ < timeEstimateBuildBlockCount_ &&
-         processedBlocks < kTimeEstimateBlocksPerUpdate) {
-    const size_t block = timeEstimateBuildNextBlock_;
-    wordBonusBlockPrefixSumMs_[block] = timeEstimateBuildRunningMs_;
-    const size_t blockStart = block * kTimeEstimateBlockWords;
-    const size_t blockEnd =
-        std::min(timeEstimateBuildWordCount_, blockStart + kTimeEstimateBlockWords);
-    for (size_t i = blockStart; i < blockEnd; ++i) {
-      timeEstimateBuildRunningMs_ += reader_.wordPacingBonusMsAt(i);
-    }
-    ++timeEstimateBuildNextBlock_;
-    ++processedBlocks;
-    delay(0);
-  }
-
-  if (timeEstimateBuildNextBlock_ >= timeEstimateBuildBlockCount_) {
-    wordBonusBlockPrefixSumMs_[timeEstimateBuildBlockCount_] = timeEstimateBuildRunningMs_;
-    timeEstimateCacheValid_ = true;
-    const uint32_t elapsedMs = millis() - timeEstimateBuildStartedMs_;
-    Serial.printf("[time-est] background cached %u words in %u blocks bonus=%lums took=%lums\n",
-                  static_cast<unsigned int>(timeEstimateBuildWordCount_),
-                  static_cast<unsigned int>(timeEstimateBuildBlockCount_),
-                  static_cast<unsigned long>(timeEstimateBuildRunningMs_),
-                  static_cast<unsigned long>(elapsedMs));
-    cancelTimeEstimateBuild();
-    if (state_ == AppState::Paused || state_ == AppState::Playing) {
-      renderActiveReader(nowMs);
-    } else if (state_ == AppState::Menu) {
-      renderMenu();
-    }
-    return;
-  }
-
-  if (nowMs - timeEstimateBuildLastLogMs_ >= kTimeEstimateProgressLogMs) {
-    const int progress =
-        static_cast<int>((timeEstimateBuildNextBlock_ * 100UL) /
-                         std::max<size_t>(1, timeEstimateBuildBlockCount_));
-    Serial.printf("[time-est] background progress %u/%u blocks (%d%%)\n",
-                  static_cast<unsigned int>(timeEstimateBuildNextBlock_),
-                  static_cast<unsigned int>(timeEstimateBuildBlockCount_), progress);
-    timeEstimateBuildLastLogMs_ = nowMs;
-    if (state_ == AppState::Paused) {
-      renderActiveReader(nowMs);
-    }
-  }
-}
-
 String App::timeEstimateModeLabel() const {
-  return uiText(accurateTimeEstimateEnabled_ ? UiText::TimeEstimateAccurate
-                                             : UiText::TimeEstimateFast);
-}
-
-String App::formatReadingTimeRemaining(uint32_t remainingMs) const {
-  const uint32_t totalSeconds = remainingMs / 1000UL;
-  if (totalSeconds < 60UL) {
-    return "0m";
-  }
-
-  const uint32_t totalMinutes = totalSeconds / 60UL;
-  if (totalMinutes < 60UL) {
-    return String(totalMinutes) + "m";
-  }
-
-  const uint32_t totalHours = totalMinutes / 60UL;
-  const uint32_t minutes = totalMinutes % 60UL;
-  if (totalHours < 24UL) {
-    if (minutes == 0) {
-      return String(totalHours) + "h";
-    }
-    return String(totalHours) + "h" + String(minutes) + "m";
-  }
-
-  const uint32_t days = totalHours / 24UL;
-  const uint32_t hours = totalHours % 24UL;
-  if (hours == 0) {
-    return String(days) + "d";
-  }
-  return String(days) + "d" + String(hours) + "h";
+  return uiText(timeEstimate_.accurateEstimate() ? UiText::TimeEstimateAccurate
+                                                 : UiText::TimeEstimateFast);
 }
 
 uint8_t App::readingProgressPercent() const {
@@ -7448,7 +5898,8 @@ DisplayManager::TypographyConfig App::effectiveTypographyConfig() const {
 }
 
 uint32_t App::currentReaderContentToken() const {
-  return hashBookPath(currentBookPath_.isEmpty() ? String("__demo__") : currentBookPath_);
+  return BookLibraryStore::hashBookPath(currentBookPath_.isEmpty() ? String("__demo__")
+                                                                       : currentBookPath_);
 }
 
 size_t App::phantomBeforeCharTarget() const {
@@ -7604,7 +6055,7 @@ void App::handleCurrentBookReadFailure(uint32_t nowMs, const char *detail) {
   contextViewVisible_ = false;
   wpmFeedbackVisible_ = false;
   invalidateContextPreviewWindow();
-  invalidateTimeEstimateCache();
+  timeEstimate_.invalidate();
 
   setState(AppState::Menu, nowMs);
   display_.renderStatus("Book read failed", failedTitle,

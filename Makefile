@@ -6,6 +6,7 @@ PIO ?= python3 -m platformio
 PORT ?= auto
 MONITOR ?= 0
 VERSION ?=
+DEV := ENV=$(ENV) PORT=$(PORT) VERSION=$(VERSION)
 
 FLASH_ARGS := -e $(ENV)
 ifneq ($(PORT),auto)
@@ -22,7 +23,7 @@ endif
 .PHONY: help menu build build-amoled build-bar test flash flash-monitor rsvp monitor ports clean export-web release-check flash-bringup merge-bringup
 
 menu:
-	@./dev.sh
+	@$(DEV) ./dev.sh menu
 
 help:
 	@printf "RSVP Nano helper targets\n"
@@ -72,11 +73,7 @@ flash-monitor: flash
 rsvp: flash
 
 monitor:
-ifeq ($(PORT),auto)
-	$(PIO) device monitor -b 115200
-else
-	$(PIO) device monitor -p $(PORT) -b 115200
-endif
+	@$(DEV) ./dev.sh monitor
 
 ports:
 	@printf "Likely ESP32 serial ports:\n"
