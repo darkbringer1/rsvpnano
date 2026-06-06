@@ -11,6 +11,7 @@
 #include "app/Localization.h"
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
+#include "display/StandbyScreensaver.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
 #include "reader/ReadingLoop.h"
@@ -112,13 +113,6 @@ class App {
     Percent = 0,
     TimeRemaining = 1,
     Voltage = 2,
-  };
-
-  enum class ScreensaverMode : uint8_t {
-    Life = 0,
-    Maze = 2,
-    Voronoi = 3,
-    ScreenOff = 6,
   };
 
   enum class PauseMode : uint8_t {
@@ -332,17 +326,6 @@ class App {
   void updateDeepStandbyIdle(uint32_t nowMs);
   String deepStandbyDelayLabel() const;
 #endif
-  void seedStandbyScreensaver(uint32_t nowMs);
-  void stepStandbyScreensaver(uint32_t nowMs);
-  void seedStandbyLife(uint32_t nowMs);
-  void stepStandbyLife();
-  void seedStandbyMaze(uint32_t nowMs);
-  void stepStandbyMaze();
-  void seedStandbyVoronoi(uint32_t nowMs);
-  void stepStandbyVoronoi();
-  void renderStandbyVoronoi();
-  void seedStandbyScreenOff(uint32_t nowMs);
-  void updateStandbyScreensaver(uint32_t nowMs, bool force = false);
   void enterPowerOff(uint32_t nowMs);
   void enterSleep(uint32_t nowMs);
   void wakeFromSleep();
@@ -412,7 +395,6 @@ class App {
   String currentBatteryLabel() const;
   String footerMetricModeLabel() const;
   String batteryLabelModeLabel() const;
-  String screensaverModeLabel() const;
   String batteryTimeRemainingLabel() const;
   String batteryVoltageLabel() const;
   String formatBatteryTimeRemaining(uint32_t minutes) const;
@@ -475,6 +457,7 @@ class App {
   ButtonHandler button_;
   ButtonHandler powerButton_;
   TouchHandler touch_;
+  StandbyScreensaver screensaver_;
   StorageManager storage_;
   IndexedBookStore activeBookStore_;
   OtaUpdater otaUpdater_;
@@ -501,9 +484,6 @@ class App {
   uint32_t standbyEnteredMs_ = 0;
   uint32_t powerSaveEnteredMs_ = 0;
   uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; PWR-tap deep standby auto-enter.
-  uint32_t lastStandbyFrameMs_ = 0;
-  uint32_t standbyLifeGeneration_ = 0;
-  uint32_t standbyScreensaverRng_ = 1;
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
@@ -573,15 +553,6 @@ class App {
   std::vector<DisplayManager::ContextWord> contextPreviewWords_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
   std::vector<TextEntryButton> textEntryButtons_;
-  std::vector<uint32_t> standbyLifeCells_;
-  std::vector<uint32_t> standbyLifeNextCells_;
-  std::vector<uint32_t> standbyScreensaverDimCells_;
-  std::vector<uint8_t> standbyMazeVisited_;
-  std::vector<uint16_t> standbyMazeStack_;
-  std::vector<int16_t> standbyVoronoiX_;
-  std::vector<int16_t> standbyVoronoiY_;
-  std::vector<int16_t> standbyVoronoiDx_;
-  std::vector<int16_t> standbyVoronoiDy_;
   String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash
   String currentBookPath_;
   String currentBookTitle_;
@@ -614,7 +585,6 @@ class App {
   bool standbyComboActive_ = false;
   bool standbyComboHandled_ = false;
   bool standbyButtonsReleased_ = false;
-  bool standbyScreenOffActive_ = false;
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
@@ -648,7 +618,6 @@ class App {
   bool chapterLabelEnabled_ = true;
   FooterMetricMode footerMetricMode_ = FooterMetricMode::Percentage;
   BatteryLabelMode batteryLabelMode_ = BatteryLabelMode::Percent;
-  ScreensaverMode screensaverMode_ = ScreensaverMode::Life;
   PauseMode pauseMode_ = PauseMode::SentenceEnd;
   bool darkMode_ = true;
   bool nightMode_ = false;
