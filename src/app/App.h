@@ -92,6 +92,7 @@ class App {
     TypographyTuning,
     BookPicker,
     ChapterPicker,
+    ReadingStats,
     RestartConfirm,
     SdCardRepairConfirm,
     UpdateConfirm,
@@ -367,6 +368,12 @@ class App {
   void renderTypographyTuning();
   void renderBookPicker();
   void renderChapterPicker();
+  // Lifetime reading stats screen (words/time/books read).
+  void openReadingStats();
+  void renderReadingStats();
+  void selectReadingStatsItem(uint32_t nowMs);
+  void loadLifetimeStats();
+  void saveLifetimeStats();
   void renderRestartConfirm();
   void renderSdCardRepairConfirm();
   void renderUpdateConfirm();
@@ -487,6 +494,13 @@ class App {
   uint32_t readingSessionMs_ = 0;
   uint32_t playingStartedMs_ = 0;
   size_t wordsReadThisSession_ = 0;
+  // Lifetime totals (persisted in NVS), shown on the Reading stats screen.
+  uint32_t lifetimeWordsRead_ = 0;
+  uint64_t lifetimeReadMs_ = 0;
+  uint32_t lifetimeBooksFinished_ = 0;
+  bool lifetimeStatsDirty_ = false;
+  std::vector<String> readingStatsItems_;
+  size_t readingStatsSelectedIndex_ = 0;
   size_t contextPreviewStartIndex_ = 0;
   size_t contextPreviewCurrentLocalIndex_ = static_cast<size_t>(-1);
   size_t currentBookIndex_ = 0;

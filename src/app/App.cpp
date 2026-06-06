@@ -96,6 +96,7 @@ enum MenuItem : size_t {
   MenuChapters,
   MenuBooks,
   MenuArticles,
+  MenuReadingStats,
   MenuFocusTimer,
   MenuSettings,
   MenuSdCardCheck,
@@ -249,6 +250,9 @@ constexpr const char *kPrefTypographyAnchor = "type_anc";
 constexpr const char *kPrefTypographyGuideWidth = "type_wid";
 constexpr const char *kPrefTypographyGuideGap = "type_gap";
 constexpr const char *kPrefRecentSeq = "seq";
+constexpr const char *kPrefLifetimeWords = "lt_words";
+constexpr const char *kPrefLifetimeMs = "lt_ms";
+constexpr const char *kPrefLifetimeBooks = "lt_books";
 constexpr const char *kPrefWifiSsid = "wifi_ssid";
 constexpr const char *kPrefWifiPass = "wifi_pass";
 constexpr const char *kPrefOtaAuto = "ota_auto";
@@ -685,6 +689,7 @@ void App::begin() {
   powerButtonLongPressHandled_ = false;
   storage_.setStatusCallback(&App::handleStorageStatus, this);
   preferences_.begin(kPrefsNamespace, false);
+  loadLifetimeStats();
   brightnessLevelIndex_ = preferences_.getUChar(kPrefBrightness, brightnessLevelIndex_);
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
@@ -1046,9 +1051,12 @@ void App::setState(AppState nextState, uint32_t nowMs) {
     flushPendingTimeEstimateRebuild();
   }
 
-  // Accumulate active reading time for the completion-screen stats.
+  // Accumulate active reading time for the completion-screen + lifetime stats.
   if (previousState == AppState::Playing && nowMs >= playingStartedMs_) {
-    readingSessionMs_ += nowMs - playingStartedMs_;
+    const uint32_t segment = nowMs - playingStartedMs_;
+    readingSessionMs_ += segment;
+    lifetimeReadMs_ += segment;
+    lifetimeStatsDirty_ = true;
   }
   if (nextState == AppState::Playing) {
     playingStartedMs_ = nowMs;
@@ -1222,7 +1230,10 @@ void App::updateReader(uint32_t nowMs) {
     return;
   }
   if (changed && reader_.currentIndex() > previousIndex) {
-    wordsReadThisSession_ += reader_.currentIndex() - previousIndex;
+    const size_t delta = reader_.currentIndex() - previousIndex;
+    wordsReadThisSession_ += delta;
+    lifetimeWordsRead_ += static_cast<uint32_t>(delta);
+    lifetimeStatsDirty_ = true;
   }
   if (changed && maybeStartChapterTransition(previousIndex, reader_.currentIndex(), nowMs)) {
     return;
@@ -1262,6 +1273,7 @@ void App::maybeSaveReadingPosition(uint32_t nowMs) {
 
   lastProgressSaveMs_ = nowMs;
   saveReadingPosition(false);
+  saveLifetimeStats();  // flush lifetime totals on the same throttle
 }
 
 bool App::handleStandbyCombo(uint32_t nowMs) {
@@ -2911,6 +2923,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     selectedIndex = &chapterPickerSelectedIndex_;
     itemCount = chapterMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::ReadingStats) {
+    selectedIndex = &readingStatsSelectedIndex_;
+    itemCount = readingStatsItems_.size();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectedIndex = &restartConfirmSelectedIndex_;
     itemCount = RestartConfirmItemCount;
@@ -3052,6 +3067,10 @@ void App::selectMenuItem(uint32_t nowMs) {
     selectChapterPickerItem(nowMs);
     return;
   }
+  if (menuScreen_ == MenuScreen::ReadingStats) {
+    selectReadingStatsItem(nowMs);
+    return;
+  }
   if (menuScreen_ == MenuScreen::RestartConfirm) {
     selectRestartConfirmItem(nowMs);
     return;
@@ -3101,6 +3120,9 @@ void App::selectMenuItem(uint32_t nowMs) {
 #endif
     case MenuChapters:
       openChapterPicker();
+      return;
+    case MenuReadingStats:
+      openReadingStats();
       return;
     case MenuBooks:
       openBookPicker(false);
@@ -5409,7 +5431,14 @@ void App::enterPowerOff(uint32_t nowMs) {
 
   powerOffStarted_ = true;
   Serial.println("[app] powering off; hold PWR to start again");
+  // Count the final reading segment and persist lifetime totals before sleeping
+  // (this sets state directly, bypassing setState's normal accrual).
+  if (state_ == AppState::Playing && nowMs >= playingStartedMs_) {
+    lifetimeReadMs_ += nowMs - playingStartedMs_;
+    lifetimeStatsDirty_ = true;
+  }
   saveReadingPosition(true);
+  saveLifetimeStats();
   pausedTouch_.active = false;
   pausedTouchIntent_ = TouchIntent::None;
   touchPlayHeld_ = false;
@@ -5845,6 +5874,8 @@ void App::renderMenu() {
     renderBookPicker();
   } else if (menuScreen_ == MenuScreen::ChapterPicker) {
     renderChapterPicker();
+  } else if (menuScreen_ == MenuScreen::ReadingStats) {
+    renderReadingStats();
   } else if (menuScreen_ == MenuScreen::RestartConfirm) {
     renderRestartConfirm();
   } else if (menuScreen_ == MenuScreen::SdCardRepairConfirm) {
@@ -5869,6 +5900,7 @@ void App::renderMainMenu() {
   items.push_back(uiText(UiText::Chapters));
   items.push_back("Books");
   items.push_back("Articles");
+  items.push_back("Reading stats");
   items.push_back("Focus Timer");
   items.push_back(uiText(UiText::Settings));
   items.push_back("SD card check");
@@ -5939,6 +5971,9 @@ void App::enterBookFinished(uint32_t nowMs) {
   // Persist the final position and the read flag before showing the summary.
   saveReadingPosition(true);
   setBookFinished(currentBookPath_, true);
+  ++lifetimeBooksFinished_;
+  lifetimeStatsDirty_ = true;
+  saveLifetimeStats();
   Serial.printf("[app] book finished: %s (%u words, %lus session)\n",
                 currentBookTitle_.c_str(), static_cast<unsigned int>(reader_.wordCount()),
                 static_cast<unsigned long>(readingSessionMs_ / 1000UL));
@@ -5981,6 +6016,81 @@ void App::renderBookFinished() {
   stats += "  -  " + timeStr;
 
   display_.renderStatus("Finished", title, stats);
+}
+
+void App::loadLifetimeStats() {
+  lifetimeWordsRead_ = preferences_.getUInt(kPrefLifetimeWords, 0);
+  lifetimeReadMs_ = preferences_.getULong64(kPrefLifetimeMs, 0);
+  lifetimeBooksFinished_ = preferences_.getUInt(kPrefLifetimeBooks, 0);
+  lifetimeStatsDirty_ = false;
+}
+
+void App::saveLifetimeStats() {
+  if (!lifetimeStatsDirty_) {
+    return;
+  }
+  preferences_.putUInt(kPrefLifetimeWords, lifetimeWordsRead_);
+  preferences_.putULong64(kPrefLifetimeMs, lifetimeReadMs_);
+  preferences_.putUInt(kPrefLifetimeBooks, lifetimeBooksFinished_);
+  lifetimeStatsDirty_ = false;
+}
+
+void App::openReadingStats() {
+  saveLifetimeStats();  // flush any in-RAM deltas so the numbers are current
+  readingStatsItems_.clear();
+  readingStatsItems_.push_back(uiText(UiText::Back));
+
+  // Words read, grouped with thousands separators.
+  char numBuf[16];
+  std::snprintf(numBuf, sizeof(numBuf), "%lu", static_cast<unsigned long>(lifetimeWordsRead_));
+  String digits = numBuf;
+  String grouped;
+  int counted = 0;
+  for (int i = static_cast<int>(digits.length()) - 1; i >= 0; --i) {
+    grouped = String(digits[i]) + grouped;
+    if (++counted % 3 == 0 && i > 0) {
+      grouped = "," + grouped;
+    }
+  }
+  readingStatsItems_.push_back(String("Words: ") + grouped);
+
+  // Total reading time.
+  const uint32_t totalMin = static_cast<uint32_t>(lifetimeReadMs_ / 60000ULL);
+  String timeStr;
+  if (totalMin >= 60) {
+    timeStr = String(totalMin / 60) + "h " + String(totalMin % 60) + "m";
+  } else {
+    timeStr = String(totalMin) + "m";
+  }
+  readingStatsItems_.push_back(String("Time: ") + timeStr);
+
+  readingStatsItems_.push_back(String("Books read: ") + String(lifetimeBooksFinished_));
+
+  // Lifetime average reading speed.
+  uint32_t avgWpm = 0;
+  if (lifetimeReadMs_ >= 60000ULL) {
+    avgWpm = static_cast<uint32_t>(
+        (static_cast<uint64_t>(lifetimeWordsRead_) * 60000ULL) / lifetimeReadMs_);
+  }
+  readingStatsItems_.push_back(String("Avg speed: ") + String(avgWpm) + " wpm");
+
+  readingStatsSelectedIndex_ = 0;  // "Back" highlighted
+  menuScreen_ = MenuScreen::ReadingStats;
+  renderReadingStats();
+}
+
+void App::renderReadingStats() {
+  display_.renderMenu(readingStatsItems_, readingStatsSelectedIndex_);
+}
+
+void App::selectReadingStatsItem(uint32_t nowMs) {
+  // Only "Back" (row 0) is actionable; the stat rows are read-only.
+  (void)nowMs;
+  if (readingStatsSelectedIndex_ != 0) {
+    return;
+  }
+  menuScreen_ = MenuScreen::Main;
+  renderMainMenu();
 }
 
 void App::renderChapterPicker() {
