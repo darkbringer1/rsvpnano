@@ -367,10 +367,6 @@ constexpr const char *kTypographyPreviewWords[] = {
 constexpr size_t kTypographyPreviewWordCount =
     sizeof(kTypographyPreviewWords) / sizeof(kTypographyPreviewWords[0]);
 constexpr size_t kWifiPasswordMaxLength = 63;
-constexpr uint16_t kKeyboardMarginX = 8;
-constexpr uint16_t kKeyboardTopY = 48;
-constexpr uint16_t kKeyboardRowGap = 4;
-constexpr uint16_t kKeyboardRowHeight = 27;
 
 void logApp(const char *message) {
   ESP_LOGI(kAppTag, "%s", message);
@@ -441,46 +437,6 @@ bool wifiNetworkRequiresPassword(uint8_t authMode) {
 
 String wifiSecurityLabel(uint8_t authMode) {
   return wifiNetworkRequiresPassword(authMode) ? "Secure" : "Open";
-}
-
-String maskedValue(const String &value) {
-  String masked;
-  masked.reserve(value.length());
-  for (size_t i = 0; i < value.length(); ++i) {
-    masked += '*';
-  }
-  return masked;
-}
-
-const char *keyboardRowText(uint8_t modeValue, size_t rowIndex) {
-  static constexpr const char *kLowerRows[] = {
-      "qwertyuiop",
-      "asdfghjkl",
-      "zxcvbnm",
-  };
-  static constexpr const char *kUpperRows[] = {
-      "QWERTYUIOP",
-      "ASDFGHJKL",
-      "ZXCVBNM",
-  };
-  static constexpr const char *kSymbolRows[] = {
-      "1234567890",
-      "!@#$%^&*?",
-      "-_=+/:;.,",
-  };
-
-  if (rowIndex >= 3) {
-    return "";
-  }
-
-  switch (modeValue) {
-    case 1:
-      return kUpperRows[rowIndex];
-    case 2:
-      return kSymbolRows[rowIndex];
-    default:
-      return kLowerRows[rowIndex];
-  }
 }
 
 String storedOrFallbackLabel(const String &value, const String &fallback) {
@@ -603,7 +559,14 @@ App::App()
       powerButton_(BoardConfig::PIN_PWR_BUTTON),
       screensaver_(
           display_, [this]() { return static_cast<uint32_t>(reader_.currentIndex()); },
-          [this]() { return batteryDisplayedPercent_; }) {}
+          [this]() { return batteryDisplayedPercent_; }),
+      textEntry_(
+          display_, [this](uint32_t nowMs) { submitWifiPassword(nowMs); },
+          [this]() {
+            menuScreen_ = textEntryReturnScreen_;
+            textEntry_.close();
+            renderMenu();
+          }) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
   const char *reset = "?";
@@ -2662,7 +2625,7 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::TextEntry) {
     if (absDeltaX <= static_cast<int>(kTapSlopPx) && absDeltaY <= static_cast<int>(kTapSlopPx)) {
-      handleTextEntryTap(event.x, event.y, nowMs);
+      textEntry_.handleTap(event.x, event.y, nowMs);
     }
     return;
   }
@@ -3642,9 +3605,7 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
     if (configuredWifiSsid() == network.ssid) {
       initialValue = preferredOtaConfig().wifiPassword;
     }
-    openTextEntry(TextEntryPurpose::WifiPassword, network.ssid, "Password", "",
-                  initialValue, network.ssid, true, kWifiPasswordMaxLength,
-                  MenuScreen::WifiNetworks);
+    openWifiPasswordEntry(network.ssid, initialValue);
     return;
   }
 
@@ -3655,249 +3616,28 @@ void App::selectWifiNetworkItem(uint32_t nowMs) {
   openWifiSettings();
 }
 
-void App::openTextEntry(TextEntryPurpose purpose, const String &title, const String &prompt,
-                        const String &helperText, const String &initialValue,
-                        const String &contextValue, bool masked, size_t maxLength,
-                        MenuScreen returnScreen) {
-  textEntrySession_ = TextEntrySession();
-  textEntrySession_.active = true;
-  textEntrySession_.purpose = purpose;
-  textEntrySession_.mode = KeyboardMode::Lower;
-  textEntrySession_.returnScreen = returnScreen;
-  textEntrySession_.title = title;
-  textEntrySession_.prompt = prompt;
-  textEntrySession_.helperText = helperText;
-  textEntrySession_.value = initialValue;
-  textEntrySession_.contextValue = contextValue;
-  textEntrySession_.maxLength = maxLength;
-  textEntrySession_.masked = masked;
-  textEntrySession_.revealValue = false;
+void App::openWifiPasswordEntry(const String &ssid, const String &initialValue) {
+  textEntryReturnScreen_ = MenuScreen::WifiNetworks;
   menuScreen_ = MenuScreen::TextEntry;
-  rebuildTextEntryButtons();
-  renderTextEntry();
+  textEntry_.open(ssid, "Password", "", initialValue, ssid, true, kWifiPasswordMaxLength);
 }
 
-void App::rebuildTextEntryButtons() {
-  textEntryButtons_.clear();
-  if (!textEntrySession_.active) {
-    return;
-  }
-
-  const uint16_t rowPitch = kKeyboardRowHeight + kKeyboardRowGap;
-  for (size_t rowIndex = 0; rowIndex < 3; ++rowIndex) {
-    const String rowChars = keyboardRowText(static_cast<uint8_t>(textEntrySession_.mode), rowIndex);
-    const size_t keyCount = rowChars.length();
-    if (keyCount == 0) {
-      continue;
-    }
-
-    const int availableWidth =
-        BoardConfig::DISPLAY_WIDTH - (2 * kKeyboardMarginX) -
-        static_cast<int>((keyCount - 1) * kKeyboardRowGap);
-    const int keyWidth = std::max(28, availableWidth / static_cast<int>(keyCount));
-    const int totalWidth =
-        keyWidth * static_cast<int>(keyCount) + static_cast<int>((keyCount - 1) * kKeyboardRowGap);
-    int x = std::max(0, (BoardConfig::DISPLAY_WIDTH - totalWidth) / 2);
-    const int y = kKeyboardTopY + static_cast<int>(rowIndex * rowPitch);
-
-    for (size_t charIndex = 0; charIndex < keyCount; ++charIndex) {
-      TextEntryButton button;
-      button.view.label = String(rowChars[charIndex]);
-      button.view.x = static_cast<uint16_t>(x);
-      button.view.y = static_cast<uint16_t>(y);
-      button.view.width = static_cast<uint16_t>(keyWidth);
-      button.view.height = kKeyboardRowHeight;
-      button.action = TextEntryAction::Insert;
-      button.payload = String(rowChars[charIndex]);
-      textEntryButtons_.push_back(button);
-      x += keyWidth + kKeyboardRowGap;
-    }
-  }
-
-  struct ControlButtonDef {
-    String label;
-    TextEntryAction action;
-    uint16_t units;
-    bool accent;
-    bool active;
-  };
-
-  const bool revealActive = textEntrySession_.masked && textEntrySession_.revealValue;
-  const ControlButtonDef controls[] = {
-      {"abc", TextEntryAction::SetLower, 11, false,
-       textEntrySession_.mode == KeyboardMode::Lower},
-      {"ABC", TextEntryAction::SetUpper, 11, false,
-       textEntrySession_.mode == KeyboardMode::Upper},
-      {"123", TextEntryAction::SetSymbols, 11, false,
-       textEntrySession_.mode == KeyboardMode::Symbols},
-      {"space", TextEntryAction::Space, 24, false, false},
-      {"back", TextEntryAction::Backspace, 13, false, false},
-      {textEntrySession_.masked ? (revealActive ? "hide" : "show") : "clear",
-       textEntrySession_.masked ? TextEntryAction::ToggleMask : TextEntryAction::Clear, 13, false,
-       revealActive},
-      {"save", TextEntryAction::Save, 12, true, false},
-      {"cancel", TextEntryAction::Cancel, 14, false, false},
-  };
-
-  uint16_t totalUnits = 0;
-  for (const ControlButtonDef &control : controls) {
-    totalUnits += control.units;
-  }
-
-  const size_t controlCount = sizeof(controls) / sizeof(controls[0]);
-  const int totalGapWidth = static_cast<int>((controlCount - 1) * kKeyboardRowGap);
-  const int availableWidth = BoardConfig::DISPLAY_WIDTH - (2 * kKeyboardMarginX) - totalGapWidth;
-  int remainingWidth = availableWidth;
-  uint16_t x = kKeyboardMarginX;
-  const uint16_t y = kKeyboardTopY + static_cast<uint16_t>(3 * rowPitch);
-
-  for (size_t i = 0; i < controlCount; ++i) {
-    const ControlButtonDef &control = controls[i];
-    int width = remainingWidth;
-    if (i + 1 < controlCount) {
-      width = (availableWidth * control.units) / totalUnits;
-      remainingWidth -= width;
-    }
-
-    TextEntryButton button;
-    button.view.label = control.label;
-    button.view.x = x;
-    button.view.y = y;
-    button.view.width = static_cast<uint16_t>(std::max(28, width));
-    button.view.height = kKeyboardRowHeight;
-    button.view.accent = control.accent;
-    button.view.active = control.active;
-    button.action = control.action;
-    textEntryButtons_.push_back(button);
-
-    x = static_cast<uint16_t>(x + button.view.width + kKeyboardRowGap);
-  }
-}
-
-void App::renderTextEntry() {
-  if (!textEntrySession_.active) {
-    return;
-  }
-
-  const String visibleValue =
-      (textEntrySession_.masked && !textEntrySession_.revealValue)
-          ? maskedValue(textEntrySession_.value)
-          : textEntrySession_.value;
-
-  std::vector<DisplayManager::Button> buttons;
-  buttons.reserve(textEntryButtons_.size());
-  for (const TextEntryButton &button : textEntryButtons_) {
-    buttons.push_back(button.view);
-  }
-
-  display_.renderTextEntry(textEntrySession_.title, textEntrySession_.prompt, visibleValue,
-                           textEntrySession_.helperText, buttons);
-}
-
-bool App::handleTextEntryTap(uint16_t x, uint16_t y, uint32_t nowMs) {
-  if (!textEntrySession_.active) {
-    return false;
-  }
-
-  for (size_t i = 0; i < textEntryButtons_.size(); ++i) {
-    const DisplayManager::Button &button = textEntryButtons_[i].view;
-    const uint16_t maxX = button.x + button.width;
-    const uint16_t maxY = button.y + button.height;
-    if (x < button.x || x > maxX || y < button.y || y > maxY) {
-      continue;
-    }
-
-    activateTextEntryButton(i, nowMs);
-    return true;
-  }
-
-  return false;
-}
-
-void App::activateTextEntryButton(size_t buttonIndex, uint32_t nowMs) {
-  if (buttonIndex >= textEntryButtons_.size()) {
-    return;
-  }
-
-  TextEntryButton &button = textEntryButtons_[buttonIndex];
-  switch (button.action) {
-    case TextEntryAction::Insert:
-      if (textEntrySession_.value.length() < textEntrySession_.maxLength) {
-        textEntrySession_.value += button.payload;
-      }
-      break;
-    case TextEntryAction::SetLower:
-      textEntrySession_.mode = KeyboardMode::Lower;
-      break;
-    case TextEntryAction::SetUpper:
-      textEntrySession_.mode = KeyboardMode::Upper;
-      break;
-    case TextEntryAction::SetSymbols:
-      textEntrySession_.mode = KeyboardMode::Symbols;
-      break;
-    case TextEntryAction::Space:
-      if (textEntrySession_.value.length() < textEntrySession_.maxLength) {
-        textEntrySession_.value += ' ';
-      }
-      break;
-    case TextEntryAction::Backspace:
-      if (!textEntrySession_.value.isEmpty()) {
-        textEntrySession_.value.remove(textEntrySession_.value.length() - 1);
-      }
-      break;
-    case TextEntryAction::Clear:
-      textEntrySession_.value = "";
-      break;
-    case TextEntryAction::ToggleMask:
-      if (textEntrySession_.masked) {
-        textEntrySession_.revealValue = !textEntrySession_.revealValue;
-      }
-      break;
-    case TextEntryAction::Save:
-      commitTextEntry(nowMs);
-      return;
-    case TextEntryAction::Cancel:
-      menuScreen_ = textEntrySession_.returnScreen;
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      renderMenu();
-      return;
-  }
-
-  rebuildTextEntryButtons();
-  renderTextEntry();
-}
-
-void App::commitTextEntry(uint32_t nowMs) {
+void App::submitWifiPassword(uint32_t nowMs) {
   (void)nowMs;
-
-  switch (textEntrySession_.purpose) {
-    case TextEntryPurpose::WifiPassword: {
-      if (textEntrySession_.value.isEmpty()) {
-        display_.renderStatus("Wi-Fi", "Password required", textEntrySession_.contextValue);
-        delay(1000);
-        renderTextEntry();
-        return;
-      }
-
-      const String ssid = textEntrySession_.contextValue;
-      preferences_.putString(kPrefWifiSsid, ssid);
-      preferences_.putString(kPrefWifiPass, textEntrySession_.value);
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      display_.renderStatus("Wi-Fi", "Network saved", ssid);
-      delay(900);
-      openWifiSettings();
-      return;
-    }
-    case TextEntryPurpose::None:
-    default:
-      menuScreen_ = textEntrySession_.returnScreen;
-      textEntrySession_ = TextEntrySession();
-      textEntryButtons_.clear();
-      renderMenu();
-      return;
+  if (textEntry_.value().isEmpty()) {
+    display_.renderStatus("Wi-Fi", "Password required", textEntry_.contextValue());
+    delay(1000);
+    textEntry_.render();
+    return;
   }
+
+  const String ssid = textEntry_.contextValue();
+  preferences_.putString(kPrefWifiSsid, ssid);
+  preferences_.putString(kPrefWifiPass, textEntry_.value());
+  textEntry_.close();
+  display_.renderStatus("Wi-Fi", "Network saved", ssid);
+  delay(900);
+  openWifiSettings();
 }
 
 void App::openTypographyTuning() {
@@ -5595,7 +5335,7 @@ void App::renderMenu() {
   } else if (menuScreen_ == MenuScreen::WifiNetworks) {
     renderWifiNetworks();
   } else if (menuScreen_ == MenuScreen::TextEntry) {
-    renderTextEntry();
+    textEntry_.render();
   } else if (menuScreen_ == MenuScreen::TypographyTuning) {
     renderTypographyTuning();
   } else if (menuScreen_ == MenuScreen::BookPicker) {

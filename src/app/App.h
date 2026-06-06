@@ -11,6 +11,7 @@
 #include "app/Localization.h"
 #include "audio/AudioManager.h"
 #include "display/DisplayManager.h"
+#include "app/TextEntryController.h"
 #include "display/StandbyScreensaver.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
@@ -120,55 +121,10 @@ class App {
     Instant = 1,
   };
 
-  enum class TextEntryPurpose : uint8_t {
-    None,
-    WifiPassword,
-  };
-
-  enum class KeyboardMode : uint8_t {
-    Lower,
-    Upper,
-    Symbols,
-  };
-
-  enum class TextEntryAction : uint8_t {
-    Insert,
-    SetLower,
-    SetUpper,
-    SetSymbols,
-    Space,
-    Backspace,
-    Clear,
-    ToggleMask,
-    Save,
-    Cancel,
-  };
-
   struct WifiNetworkInfo {
     String ssid;
     int32_t rssi = 0;
     uint8_t authMode = 0;
-  };
-
-  struct TextEntryButton {
-    DisplayManager::Button view;
-    TextEntryAction action = TextEntryAction::Insert;
-    String payload;
-  };
-
-  struct TextEntrySession {
-    bool active = false;
-    TextEntryPurpose purpose = TextEntryPurpose::None;
-    KeyboardMode mode = KeyboardMode::Lower;
-    MenuScreen returnScreen = MenuScreen::Main;
-    String title;
-    String prompt;
-    String helperText;
-    String value;
-    String contextValue;
-    size_t maxLength = 63;
-    bool masked = false;
-    bool revealValue = false;
   };
 
   void setState(AppState nextState, uint32_t nowMs);
@@ -269,15 +225,8 @@ class App {
   void scanWifiNetworks();
   void renderWifiNetworks();
   void selectWifiNetworkItem(uint32_t nowMs);
-  void openTextEntry(TextEntryPurpose purpose, const String &title, const String &prompt,
-                     const String &helperText, const String &initialValue,
-                     const String &contextValue, bool masked, size_t maxLength,
-                     MenuScreen returnScreen);
-  void rebuildTextEntryButtons();
-  void renderTextEntry();
-  bool handleTextEntryTap(uint16_t x, uint16_t y, uint32_t nowMs);
-  void activateTextEntryButton(size_t buttonIndex, uint32_t nowMs);
-  void commitTextEntry(uint32_t nowMs);
+  void openWifiPasswordEntry(const String &ssid, const String &initialValue);
+  void submitWifiPassword(uint32_t nowMs);
   String configuredWifiSsid();
   bool otaAutoCheckEnabled();
   String pacingDelayLabel(uint16_t delayMs) const;
@@ -458,6 +407,7 @@ class App {
   ButtonHandler powerButton_;
   TouchHandler touch_;
   StandbyScreensaver screensaver_;
+  TextEntryController textEntry_;
   StorageManager storage_;
   IndexedBookStore activeBookStore_;
   OtaUpdater otaUpdater_;
@@ -527,6 +477,7 @@ class App {
   size_t typographyTuningSelectedIndex_ = 1;
   size_t typographyPreviewSampleIndex_ = 0;
   MenuScreen menuScreen_ = MenuScreen::Main;
+  MenuScreen textEntryReturnScreen_ = MenuScreen::Main;
   MenuScreen restartConfirmReturnScreen_ = MenuScreen::Main;
   MenuScreen powerOffConfirmReturnScreen_ = MenuScreen::Main;
   QueueHandle_t otaCheckQueue_ = nullptr;
@@ -552,7 +503,6 @@ class App {
   bool pacingCacheDirty_ = false;
   std::vector<DisplayManager::ContextWord> contextPreviewWords_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
-  std::vector<TextEntryButton> textEntryButtons_;
   String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash
   String currentBookPath_;
   String currentBookTitle_;
@@ -564,7 +514,6 @@ class App {
   uint8_t batteryDisplayedPercent_ = 0;
   uint8_t batteryRuntimeAnchorPercent_ = 0;
   uint32_t batteryRuntimeMinutesRemaining_ = 0;
-  TextEntrySession textEntrySession_;
   uint16_t lastReaderTapX_ = 0;
   uint16_t lastReaderTapY_ = 0;
   uint32_t lastMenuTapMs_ = 0;
