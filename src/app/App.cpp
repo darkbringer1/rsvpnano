@@ -190,6 +190,7 @@ constexpr size_t kSettingsDisplayReaderBatteryIndex = 8;
 constexpr size_t kSettingsDisplayReaderChapterIndex = 9;
 constexpr size_t kSettingsDisplayReaderProgressIndex = 10;
 constexpr size_t kSettingsDisplayLanguageIndex = 11;
+constexpr size_t kSettingsDisplayOrientLockIndex = 12;
 constexpr size_t kSettingsPacingReadingModeIndex = 1;
 constexpr size_t kSettingsPacingPauseModeIndex = 2;
 constexpr size_t kSettingsPacingWpmIndex = 3;
@@ -216,8 +217,8 @@ constexpr size_t kChapterPickerBackIndex = 0;
 constexpr size_t kChapterPickerFallbackIndex = 1;
 constexpr size_t kWifiNetworksBackIndex = 0;
 constexpr size_t kWifiNetworksFirstItemIndex = 1;
-constexpr size_t kFocusTimerGenreBackIndex = 0;
-constexpr size_t kFocusTimerGenreFirstIndex = 1;
+constexpr size_t kFocusTimerPresetBackIndex = 0;
+constexpr size_t kFocusTimerPresetFirstIndex = 1;
 constexpr const char *kPrefsNamespace = "rsvp";
 constexpr const char *kPrefBookPath = "book";
 constexpr const char *kPrefWpm = "wpm";
@@ -278,13 +279,15 @@ constexpr const char *kPrefCpuStandby = "cpu_stby";
 constexpr const char *kPrefAutoDimLevel = "dim_lvl";
 constexpr const char *kPrefAutoDimDelay = "dim_dly";
 constexpr const char *kPrefDeepStandbyDelay = "ps_dly";
-constexpr const char *kPrefTimerDurationByGenre[FocusTimer::kGenreCount] = {
-    "tmr_dur_0",  // Chores
-    "tmr_dur_1",  // RsvpNano (Work)
-    "tmr_dur_2",  // StrengthLabs (Fitness)
-    "tmr_dur_3",  // SelfCare
-    "tmr_dur_4",  // Other
+// One packed uint32 per preset: work<<24 | break<<16 | rounds<<8 | longBreak.
+constexpr const char *kPrefTimerPresetConfig[FocusTimer::kPresetCount] = {
+    "tmr_p0",  // Classic
+    "tmr_p1",  // Deep
+    "tmr_p2",  // Quick
+    "tmr_p3",  // Custom
 };
+constexpr const char *kPrefTimerChime = "tmr_chime";  // bool, default on
+constexpr const char *kPrefOrientLock = "orient_lock";  // bool, default off (auto-rotate on)
 constexpr const char *kPrefScrollFontSize = "psc_font";
 constexpr const char *kPrefScrollLetterSpacing = "psc_lspc";
 constexpr const char *kPrefScrollWordSpacing = "psc_wspc";
@@ -590,11 +593,8 @@ void App::begin() {
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
-  for (uint8_t i = 0; i < FocusTimer::kGenreCount; i++) {
-    focusTimer_.setTouchDurationIndexForGenre(
-        static_cast<FocusTimer::Genre>(i),
-        preferences_.getUChar(kPrefTimerDurationByGenre[i], 0));
-  }
+  focusTimerChimeEnabled_ = preferences_.getBool(kPrefTimerChime, focusTimerChimeEnabled_);
+  orientationLockEnabled_ = preferences_.getBool(kPrefOrientLock, orientationLockEnabled_);
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
       preferences_.getBool(kPrefReaderBatteryVisible, readerBatteryVisibleWhilePlaying_);
@@ -753,7 +753,9 @@ void App::begin() {
 
   touchInitialized_ = touch_.begin();
   audio_.begin();
-  focusTimer_.begin();
+  motion_.begin();
+  focusTimer_.begin(&motion_);
+  loadFocusTimerPreferences();
 
 #if RSVP_USB_TRANSFER_ENABLED && RSVP_USB_TRANSFER_AUTO_START
   state_ = AppState::Booting;
@@ -897,6 +899,7 @@ void App::update(uint32_t nowMs) {
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
+  updateAutoOrientation(nowMs);
   updateFocusTimer(nowMs);
   updateReader(nowMs);
   handleTouch(nowMs);
@@ -2680,21 +2683,16 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
   const int absDeltaX = abs(deltaX);
   const int absDeltaY = abs(deltaY);
 
-  // Touch-and-hold (anywhere in the session) backs out to the genre picker.
+  // Touch-and-hold cancels the session (or backs out of Setup) -> preset picker.
   if (!focusTimerCancelHoldTriggered_ && event.phase != TouchPhase::End &&
       absDeltaX <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       absDeltaY <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       nowMs - pausedTouch_.startMs >= kFocusTimerCancelHoldMs) {
     pausedTouch_.active = false;
     focusTimerCancelHoldTriggered_ = true;
-    playFocusTimerCue(FocusTimer::Cue::Cancelled);
-    focusTimer_.abandon();
-    rebuildFocusTimerGenreMenuItems();
-    focusTimerGenreSelectedIndex_ = focusTimerGenreMenuItems_.size() > 1
-                                        ? kFocusTimerGenreFirstIndex
-                                        : kFocusTimerGenreBackIndex;
-    menuScreen_ = MenuScreen::FocusTimerGenres;
-    renderFocusTimerGenres();
+    focusTimer_.hold(nowMs);
+    playFocusTimerCue(focusTimer_.consumeCue());
+    openFocusTimerPresetPicker();
     return;
   }
 
@@ -2711,36 +2709,48 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
 
   const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
                        absDeltaY <= static_cast<int>(kTapSlopPx);
+  const bool swipeLike = absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+                         absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx);
 
-  if (focusTimer_.state() == FocusTimer::State::WaitForTouchStart &&
-      absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-      absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
-    focusTimer_.stepTouchDuration(deltaX > 0 ? 1 : -1);
-    const uint8_t genreIdx = static_cast<uint8_t>(focusTimer_.genre());
-    if (genreIdx < FocusTimer::kGenreCount) {
-      preferences_.putUChar(kPrefTimerDurationByGenre[genreIdx], focusTimer_.touchDurationIndex());
+  const FocusTimer::State before = focusTimer_.state();
+
+  if (swipeLike) {
+    focusTimer_.swipe(deltaX > 0 ? 1 : -1, nowMs);
+    if (before == FocusTimer::State::Setup) {
+      saveFocusTimerPreset(focusTimer_.preset());
     }
-    renderFocusTimerSession();
+  } else if (tapLike) {
+    focusTimer_.tap(nowMs);
+  } else {
     return;
   }
 
-  // A tap starts the timer / skips to the next phase.
-  if (tapLike) {
-    focusTimer_.advance(nowMs);
-    renderFocusTimerSession();
+  playFocusTimerCue(focusTimer_.consumeCue());
+
+  // A tap on the completion screen returns to the preset picker.
+  if (focusTimer_.state() == FocusTimer::State::Complete && before == FocusTimer::State::Complete) {
+    openFocusTimerPresetPicker();
+    return;
   }
+
+  renderFocusTimerSession();
 }
 
 void App::openFocusTimer() {
-  focusTimer_.open();
-  rebuildFocusTimerGenreMenuItems();
-  focusTimerGenreSelectedIndex_ =
-      focusTimerGenreMenuItems_.size() > 1 ? kFocusTimerGenreFirstIndex : kFocusTimerGenreBackIndex;
+  focusTimer_.open(millis());
+  openFocusTimerPresetPicker();
+}
+
+void App::openFocusTimerPresetPicker() {
+  focusTimer_.abandon(millis());
+  rebuildFocusTimerPresetMenuItems();
+  focusTimerPresetSelectedIndex_ = focusTimerPresetMenuItems_.size() > 1
+                                       ? kFocusTimerPresetFirstIndex
+                                       : kFocusTimerPresetBackIndex;
   focusTimerCancelHoldTriggered_ = false;
-  menuScreen_ = (focusTimer_.state() == FocusTimer::State::GenreSelect)
-                    ? MenuScreen::FocusTimerGenres
-                    : MenuScreen::FocusTimerSession;
-  renderMenu();
+  pausedTouch_.active = false;
+  menuScreen_ = MenuScreen::FocusTimerPresets;
+  renderFocusTimerPresets();
 }
 
 void App::updateFocusTimer(uint32_t nowMs) {
@@ -2750,10 +2760,9 @@ void App::updateFocusTimer(uint32_t nowMs) {
 
   focusTimer_.update(nowMs);
   playFocusTimerCue(focusTimer_.consumeCue());
-  if (focusTimer_.state() == FocusTimer::State::GenreSelect) {
-    menuScreen_ = MenuScreen::FocusTimerGenres;
-    rebuildFocusTimerGenreMenuItems();
-    renderFocusTimerGenres();
+
+  if (focusTimer_.state() == FocusTimer::State::Cancelled) {
+    openFocusTimerPresetPicker();
     return;
   }
 
@@ -2761,71 +2770,95 @@ void App::updateFocusTimer(uint32_t nowMs) {
 }
 
 void App::resetFocusTimer() {
-  focusTimer_.abandon();
+  focusTimer_.abandon(millis());
   focusTimerCancelHoldTriggered_ = false;
   pausedTouch_.active = false;
-  focusTimerGenreSelectedIndex_ = kFocusTimerGenreBackIndex;
+  focusTimerPresetSelectedIndex_ = kFocusTimerPresetBackIndex;
   applyReaderUiOrientation();
 }
 
-void App::rebuildFocusTimerGenreMenuItems() {
-  focusTimerGenreMenuItems_.clear();
-  focusTimerGenreMenuItems_.push_back(uiText(UiText::Back));
-  const FocusTimer::Genre kGenres[] = {
-      FocusTimer::Genre::Chores, FocusTimer::Genre::RsvpNano, FocusTimer::Genre::StrengthLabs,
-      FocusTimer::Genre::SelfCare, FocusTimer::Genre::Other};
-  for (const FocusTimer::Genre genre : kGenres) {
-    focusTimerGenreMenuItems_.push_back(String(FocusTimer::genreLabel(genre)) + "  " +
-                                        String(FocusTimer::workMinutesForGenre(genre)) + "m");
+void App::rebuildFocusTimerPresetMenuItems() {
+  focusTimerPresetMenuItems_.clear();
+  focusTimerPresetMenuItems_.push_back(uiText(UiText::Back));
+  for (uint8_t i = 0; i < FocusTimer::kPresetCount; ++i) {
+    const FocusTimer::Preset preset = static_cast<FocusTimer::Preset>(i);
+    const FocusTimer::Config c = focusTimer_.presetConfig(preset);
+    focusTimerPresetMenuItems_.push_back(String(FocusTimer::presetLabel(preset)) + "  " +
+                                         String(c.workMin) + "/" + String(c.breakMin) + "  x" +
+                                         String(c.rounds));
   }
+  // Trailing toggle row: completion chime on/off.
+  focusTimerPresetMenuItems_.push_back(String("Chime: ") +
+                                       (focusTimerChimeEnabled_ ? "On" : "Off"));
 
-  if (focusTimerGenreSelectedIndex_ >= focusTimerGenreMenuItems_.size()) {
-    focusTimerGenreSelectedIndex_ =
-        focusTimerGenreMenuItems_.size() > 1 ? kFocusTimerGenreFirstIndex : kFocusTimerGenreBackIndex;
+  if (focusTimerPresetSelectedIndex_ >= focusTimerPresetMenuItems_.size()) {
+    focusTimerPresetSelectedIndex_ = focusTimerPresetMenuItems_.size() > 1
+                                         ? kFocusTimerPresetFirstIndex
+                                         : kFocusTimerPresetBackIndex;
   }
 }
 
-void App::selectFocusTimerGenre(uint32_t nowMs) {
-  if (focusTimerGenreMenuItems_.empty()) {
-    rebuildFocusTimerGenreMenuItems();
+void App::selectFocusTimerPreset(uint32_t nowMs) {
+  if (focusTimerPresetMenuItems_.empty()) {
+    rebuildFocusTimerPresetMenuItems();
   }
 
-  if (focusTimerGenreSelectedIndex_ == kFocusTimerGenreBackIndex) {
+  if (focusTimerPresetSelectedIndex_ == kFocusTimerPresetBackIndex) {
     resetFocusTimer();
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
     return;
   }
 
-  FocusTimer::Genre genre = FocusTimer::Genre::None;
-  switch (focusTimerGenreSelectedIndex_) {
-    case 1:
-      genre = FocusTimer::Genre::Chores;
-      break;
-    case 2:
-      genre = FocusTimer::Genre::RsvpNano;
-      break;
-    case 3:
-      genre = FocusTimer::Genre::StrengthLabs;
-      break;
-    case 4:
-      genre = FocusTimer::Genre::SelfCare;
-      break;
-    case 5:
-      genre = FocusTimer::Genre::Other;
-      break;
-    default:
-      break;
-  }
-
-  if (genre == FocusTimer::Genre::None) {
+  // Trailing row toggles the completion chime.
+  const size_t chimeIndex = kFocusTimerPresetFirstIndex + FocusTimer::kPresetCount;
+  if (focusTimerPresetSelectedIndex_ == chimeIndex) {
+    focusTimerChimeEnabled_ = !focusTimerChimeEnabled_;
+    preferences_.putBool(kPrefTimerChime, focusTimerChimeEnabled_);
+    rebuildFocusTimerPresetMenuItems();
+    renderFocusTimerPresets();
     return;
   }
 
-  focusTimer_.chooseGenre(genre, nowMs);
+  const uint8_t presetIdx =
+      static_cast<uint8_t>(focusTimerPresetSelectedIndex_ - kFocusTimerPresetFirstIndex);
+  if (presetIdx >= FocusTimer::kPresetCount) {
+    return;
+  }
+
+  focusTimer_.selectPreset(static_cast<FocusTimer::Preset>(presetIdx), nowMs);
   focusTimerCancelHoldTriggered_ = false;
+  pausedTouch_.active = false;
   menuScreen_ = MenuScreen::FocusTimerSession;
   renderFocusTimerSession();
+}
+
+void App::loadFocusTimerPreferences() {
+  for (uint8_t i = 0; i < FocusTimer::kPresetCount; ++i) {
+    const uint32_t packed = preferences_.getUInt(kPrefTimerPresetConfig[i], 0);
+    if (packed == 0) {
+      continue;  // no stored override -> keep the built-in default
+    }
+    FocusTimer::Config c;
+    c.workMin = static_cast<uint16_t>((packed >> 24) & 0xFF);
+    c.breakMin = static_cast<uint16_t>((packed >> 16) & 0xFF);
+    c.rounds = static_cast<uint8_t>((packed >> 8) & 0xFF);
+    c.longBreakMin = static_cast<uint16_t>(packed & 0xFF);
+    focusTimer_.setPresetConfig(static_cast<FocusTimer::Preset>(i), c);
+  }
+}
+
+void App::saveFocusTimerPreset(FocusTimer::Preset preset) {
+  const uint8_t i = static_cast<uint8_t>(preset);
+  if (i >= FocusTimer::kPresetCount) {
+    return;
+  }
+  const FocusTimer::Config c = focusTimer_.presetConfig(preset);
+  const uint32_t packed = (static_cast<uint32_t>(c.workMin & 0xFF) << 24) |
+                          (static_cast<uint32_t>(c.breakMin & 0xFF) << 16) |
+                          (static_cast<uint32_t>(c.rounds & 0xFF) << 8) |
+                          static_cast<uint32_t>(c.longBreakMin & 0xFF);
+  preferences_.putUInt(kPrefTimerPresetConfig[i], packed);
 }
 
 void App::moveMenuSelection(int direction) {
@@ -2868,9 +2901,9 @@ void App::moveMenuSelection(int direction) {
   } else if (menuScreen_ == MenuScreen::PowerOffConfirm) {
     selectedIndex = &powerOffConfirmSelectedIndex_;
     itemCount = PowerOffConfirmItemCount;
-  } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
-    selectedIndex = &focusTimerGenreSelectedIndex_;
-    itemCount = focusTimerGenreMenuItems_.size();
+  } else if (menuScreen_ == MenuScreen::FocusTimerPresets) {
+    selectedIndex = &focusTimerPresetSelectedIndex_;
+    itemCount = focusTimerPresetMenuItems_.size();
   }
 
   if (itemCount == 0) {
@@ -2927,9 +2960,9 @@ void App::moveMenuSelection(int direction) {
     const String selectedLabel =
         powerOffConfirmSelectedIndex_ == PowerOffConfirmYes ? "Yes" : "Cancel";
     Serial.printf("[power-off] selected=%s\n", selectedLabel.c_str());
-  } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
-    Serial.printf("[timer] selected genre=%s\n",
-                  focusTimerGenreMenuItems_[focusTimerGenreSelectedIndex_].c_str());
+  } else if (menuScreen_ == MenuScreen::FocusTimerPresets) {
+    Serial.printf("[timer] selected preset=%s\n",
+                  focusTimerPresetMenuItems_[focusTimerPresetSelectedIndex_].c_str());
   } else {
     String selectedLabel = uiText(UiText::Resume);
     switch (menuSelectedIndex_) {
@@ -3019,8 +3052,8 @@ void App::selectMenuItem(uint32_t nowMs) {
     selectPowerOffConfirmItem(nowMs);
     return;
   }
-  if (menuScreen_ == MenuScreen::FocusTimerGenres) {
-    selectFocusTimerGenre(nowMs);
+  if (menuScreen_ == MenuScreen::FocusTimerPresets) {
+    selectFocusTimerPreset(nowMs);
     return;
   }
   if (menuScreen_ == MenuScreen::FocusTimerSession) {
@@ -3222,6 +3255,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
         return;
       case kSettingsDisplayLanguageIndex:
         cycleUiLanguage(nowMs);
+        return;
+      case kSettingsDisplayOrientLockIndex:
+        cycleOrientationLock(nowMs);
+        rebuildSettingsMenuItems();
+        renderSettings();
         return;
       case kSettingsDisplayChapterLabelIndex:
         chapterLabelEnabled_ = !chapterLabelEnabled_;
@@ -3731,6 +3769,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Reading percent: " +
                                  onOffLabel(readerProgressVisibleWhilePlaying_));
     settingsMenuItems_.push_back(uiText(UiText::Language) + ": " + uiLanguageLabel());
+    settingsMenuItems_.push_back("Orientation lock: " + orientationLockLabel());
   } else if (menuScreen_ == MenuScreen::SettingsPacing) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Reading mode: " + readerModeLabel());
@@ -5033,8 +5072,8 @@ void App::renderMenu() {
     renderUpdateConfirm();
   } else if (menuScreen_ == MenuScreen::PowerOffConfirm) {
     renderPowerOffConfirm();
-  } else if (menuScreen_ == MenuScreen::FocusTimerGenres) {
-    renderFocusTimerGenres();
+  } else if (menuScreen_ == MenuScreen::FocusTimerPresets) {
+    renderFocusTimerPresets();
   } else if (menuScreen_ == MenuScreen::FocusTimerSession) {
     renderFocusTimerSession();
   } else {
@@ -5401,64 +5440,84 @@ void App::renderUpdateConfirm() {
   display_.renderMenu(items, updateConfirmSelectedIndex_ + kUpdateConfirmHeaderRows);
 }
 
-void App::renderFocusTimerGenres() {
+void App::renderFocusTimerPresets() {
   applyReaderUiOrientation();
-  if (focusTimerGenreMenuItems_.empty()) {
-    rebuildFocusTimerGenreMenuItems();
+  if (focusTimerPresetMenuItems_.empty()) {
+    rebuildFocusTimerPresetMenuItems();
   }
-  display_.renderMenu(focusTimerGenreMenuItems_, focusTimerGenreSelectedIndex_);
+  display_.renderMenu(focusTimerPresetMenuItems_, focusTimerPresetSelectedIndex_);
 }
 
 void App::renderFocusTimerSession() {
-  applyUiOrientation(focusTimer_.uiOrientation());
-  const String remainingLabel = formatFocusTimerRemaining(millis());
+  applyReaderUiOrientation();
+  const uint32_t now = millis();
+  const String remainingLabel = formatFocusTimerRemaining(now);
 
-  const uint8_t workMin = FocusTimer::workMinutesForGenre(focusTimer_.genre());
-  const String cycle = String("Warm 2m / Work ") + workMin + "m / Break 5m\nHold = pick another timer";
+  String roundLabel = "Round " + String(focusTimer_.currentRound()) + "/" +
+                      String(focusTimer_.totalRounds());
 
   switch (focusTimer_.state()) {
-    case FocusTimer::State::Unavailable:
-      display_.renderFocusTimerScreen("TIMER", "", "", "IMU unavailable");
+    case FocusTimer::State::PresetSelect:
+      renderFocusTimerPresets();
       return;
-    case FocusTimer::State::GenreSelect:
-      renderFocusTimerGenres();
-      return;
-    case FocusTimer::State::WaitForTouchStart: {
-      const String durationLabel = formatFocusTimerDuration(focusTimer_.selectedTouchDurationMs());
-      display_.renderFocusTimerScreen("BEGIN", "", durationLabel,
-                                      "Tap or Place to Start\nSwipe to Change", cycle);
+
+    case FocusTimer::State::Setup: {
+      const FocusTimer::Config c = focusTimer_.config();
+      const FocusTimer::Field sel = focusTimer_.selectedField();
+      auto row = [&](FocusTimer::Field f, const char *name, const String &value) {
+        const char marker = (f == sel) ? '>' : ' ';
+        return String(marker) + " " + name + "  " + value + "\n";
+      };
+      String body;
+      body += row(FocusTimer::Field::Work, "Work", String(c.workMin) + "m");
+      body += row(FocusTimer::Field::Break, "Break", String(c.breakMin) + "m");
+      body += row(FocusTimer::Field::Rounds, "Rounds", String(c.rounds));
+      body += row(FocusTimer::Field::LongBreak, "Long", String(c.longBreakMin) + "m");
+      body += (sel == FocusTimer::Field::Begin ? "> Begin" : "  Begin");
+      String mode = FocusTimer::presetLabel(focusTimer_.preset());
+      mode.toUpperCase();
+      display_.renderFocusTimerScreen(mode, "Setup", "", body,
+                                      "Tap = next  Swipe = change  Hold = back");
       return;
     }
-    case FocusTimer::State::TouchRunning:
-      display_.renderFocusTimerScreen("WARM UP", "", remainingLabel, "",
-                                      "", focusTimer_.progressPercent(millis()));
-      return;
-    case FocusTimer::State::WaitAfterTouch:
-      display_.renderFocusTimerScreen("WORK", "", "",
-                                      "Tap to start work\n(or flip / lay flat to break)", cycle);
-      return;
+
     case FocusTimer::State::WorkRunning:
-      display_.renderFocusTimerScreen("WORK", "", remainingLabel, "",
-                                      "", focusTimer_.progressPercent(millis()));
+      display_.renderFocusTimerScreen("WORK", roundLabel, remainingLabel,
+                                      "Tap = pause  Swipe = skip  Hold = cancel", "",
+                                      focusTimer_.progressPercent(now));
       return;
+
+    case FocusTimer::State::WorkPaused:
+      display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
+                                      "Tap or stand up to resume\nHold = cancel", "",
+                                      focusTimer_.progressPercent(now));
+      return;
+
     case FocusTimer::State::BreakRunning:
-      display_.renderFocusTimerScreen("BREAK", "", remainingLabel, "",
-                                      "", focusTimer_.progressPercent(millis()), true);
+      display_.renderFocusTimerScreen(focusTimer_.isLongBreak() ? "LONG BREAK" : "BREAK",
+                                      roundLabel, remainingLabel,
+                                      "Tap = pause  Swipe = skip  Hold = cancel", "",
+                                      focusTimer_.progressPercent(now), true);
       return;
-    case FocusTimer::State::WaitAfterWork:
-      display_.renderFocusTimerScreen("BREAK", "", "",
-                                      "Tap to start a 5m break\n(or flip to keep working)", cycle, -1,
-                                      true);
+
+    case FocusTimer::State::BreakPaused:
+      display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
+                                      "Tap or stand up to resume\nHold = cancel", "",
+                                      focusTimer_.progressPercent(now), true);
       return;
-    case FocusTimer::State::WaitAfterBreak:
-      display_.renderFocusTimerScreen("WORK", "", "",
-                                      "Tap to start work\n(or stand on a short side)", cycle);
+
+    case FocusTimer::State::WaitWorkStart:
+      display_.renderFocusTimerScreen("WORK", "Next: round " + String(focusTimer_.currentRound() + 1),
+                                      "", "Tap to start work\n(or stand on a short side)",
+                                      "Hold = cancel");
       return;
-    case FocusTimer::State::Cancelled:
-      display_.renderFocusTimerScreen("BEGIN", "", "", "Tap to begin again", cycle);
-      return;
+
     case FocusTimer::State::Complete:
-      display_.renderFocusTimerScreen("DONE", "", "", "Session complete");
+      display_.renderFocusTimerScreen("DONE", "", "", "Session complete\nTap to choose another timer");
+      return;
+
+    case FocusTimer::State::Cancelled:
+      display_.renderFocusTimerScreen("DONE", "", "", "Cancelled");
       return;
   }
 }
@@ -5791,7 +5850,7 @@ uint8_t App::readingProgressPercent() const {
 }
 
 bool App::isFocusTimerMenuScreen(MenuScreen screen) const {
-  return screen == MenuScreen::FocusTimerGenres || screen == MenuScreen::FocusTimerSession;
+  return screen == MenuScreen::FocusTimerPresets || screen == MenuScreen::FocusTimerSession;
 }
 
 void App::applyUiOrientation(BoardConfig::UiOrientation orientation) {
@@ -5806,6 +5865,95 @@ void App::applyReaderUiOrientation() {
 BoardConfig::UiOrientation App::readerUiOrientation() const {
   return uiRotated180() ? BoardConfig::UiOrientation::LandscapeFlipped
                         : BoardConfig::UiOrientation::Landscape;
+}
+
+String App::orientationLockLabel() const { return onOffLabel(orientationLockEnabled_); }
+
+void App::cycleOrientationLock(uint32_t nowMs) {
+  orientationLockEnabled_ = !orientationLockEnabled_;
+  preferences_.putBool(kPrefOrientLock, orientationLockEnabled_);
+  // Locking freezes at the handedness baseline: drop any active auto flip.
+  if (orientationLockEnabled_ && autoFlip180_) {
+    autoFlip180_ = false;
+    applyReaderUiOrientation();
+  }
+  autoFlipCandidate_ = autoFlip180_;
+  Serial.printf("[orient] lock=%u flip=%u\n", orientationLockEnabled_ ? 1U : 0U,
+                autoFlip180_ ? 1U : 0U);
+  (void)nowMs;
+}
+
+void App::updateAutoOrientation(uint32_t nowMs) {
+  if (orientationLockEnabled_ || !motion_.available()) {
+    return;
+  }
+  // Only evaluate in interactive, drawable states. Freeze while RSVP words are
+  // actively flashing (Playing) so a flip never interrupts a reading run.
+  if (state_ != AppState::Menu && state_ != AppState::Paused &&
+      state_ != AppState::Finished) {
+    return;
+  }
+
+  float x = 0.0f;
+  float y = 0.0f;
+  float z = 0.0f;
+  if (!motion_.readAccel(x, y, z)) {
+    return;
+  }
+  const float axes[3] = {x, y, z};
+  const uint8_t idx = BoardConfig::IMU_FLIP_AXIS < 3 ? BoardConfig::IMU_FLIP_AXIS : 1;
+  const float c = axes[idx] * BoardConfig::IMU_FLIP_UPRIGHT_SIGN;
+
+  // Throttled calibration log (read via console while flipping the device).
+  if (nowMs - lastOrientLogMs_ >= 1000) {
+    lastOrientLogMs_ = nowMs;
+    Serial.printf("[orient] x=%.2f y=%.2f z=%.2f c=%.2f flip=%u lock=%u\n", x, y, z, c,
+                  autoFlip180_ ? 1U : 0U, orientationLockEnabled_ ? 1U : 0U);
+  }
+
+  bool desired;
+  if (c <= -BoardConfig::IMU_FLIP_THRESHOLD) {
+    desired = true;  // upside-down
+  } else if (c >= BoardConfig::IMU_FLIP_THRESHOLD) {
+    desired = false;  // upright
+  } else {
+    return;  // inside the hysteresis band: hold the current orientation
+  }
+
+  if (desired == autoFlip180_) {
+    autoFlipCandidate_ = desired;
+    return;
+  }
+  if (desired != autoFlipCandidate_) {
+    autoFlipCandidate_ = desired;
+    autoFlipCandidateSinceMs_ = nowMs;
+    return;
+  }
+  constexpr uint32_t kAutoFlipStableMs = 700;
+  if (nowMs - autoFlipCandidateSinceMs_ < kAutoFlipStableMs) {
+    return;
+  }
+
+  autoFlip180_ = desired;
+  applyReaderUiOrientation();
+  refreshCurrentScreen(nowMs);
+  Serial.printf("[orient] applied flip=%u\n", autoFlip180_ ? 1U : 0U);
+}
+
+void App::refreshCurrentScreen(uint32_t nowMs) {
+  switch (state_) {
+    case AppState::Menu:
+      renderMenu();
+      break;
+    case AppState::Paused:
+      renderActiveReader(nowMs);
+      break;
+    case AppState::Finished:
+      renderBookFinished();
+      break;
+    default:
+      break;
+  }
 }
 
 String App::formatFocusTimerDuration(uint32_t durationMs) const {
@@ -5831,34 +5979,47 @@ String App::formatFocusTimerRemaining(uint32_t nowMs) const {
   return String(buffer);
 }
 
-String App::focusTimerCountsLabel() const {
-  return "T" + String(focusTimer_.completedTouchBlocks()) + " W" +
-         String(focusTimer_.completedWorkBlocks()) + " B" +
-         String(focusTimer_.completedBreakBlocks());
-}
-
 void App::playFocusTimerCue(FocusTimer::Cue cue) {
-  if (cue == FocusTimer::Cue::None) {
+  if (cue == FocusTimer::Cue::None || !focusTimerChimeEnabled_) {
     return;
   }
 
+  // Soft, undistracting amplitude for completion chimes.
+  constexpr int16_t kSoft = 6000;
+  constexpr int16_t kTick = 4000;
+
   bool played = false;
+  int flashCount = 1;
   switch (cue) {
     case FocusTimer::Cue::Start:
-      played = audio_.tone(1040, 55, 9000);
+      played = audio_.tone(1040, 45, kTick);
+      flashCount = 1;
       break;
-    case FocusTimer::Cue::TouchComplete:
-      played = audio_.tone(1320, 80) && (delay(45), audio_.tone(1560, 80));
+    case FocusTimer::Cue::Pause:
+      played = audio_.tone(660, 45, kTick);
+      flashCount = 1;
+      break;
+    case FocusTimer::Cue::Resume:
+      played = audio_.tone(990, 45, kTick);
+      flashCount = 1;
       break;
     case FocusTimer::Cue::WorkComplete:
-      played = audio_.tone(1560, 90) && (delay(45), audio_.tone(1320, 90)) &&
-               (delay(45), audio_.tone(1560, 110));
+      // Single soft chime when a work block finishes.
+      played = audio_.tone(1320, 130, kSoft);
+      flashCount = 2;
       break;
     case FocusTimer::Cue::BreakComplete:
-      played = audio_.tone(880, 90) && (delay(45), audio_.tone(1040, 100));
+      played = audio_.tone(990, 130, kSoft);
+      flashCount = 2;
+      break;
+    case FocusTimer::Cue::SessionComplete:
+      // A gentle two-note resolve for the whole session.
+      played = audio_.tone(990, 120, kSoft) && (delay(60), audio_.tone(1320, 160, kSoft));
+      flashCount = 3;
       break;
     case FocusTimer::Cue::Cancelled:
-      played = audio_.tone(440, 120, 9000);
+      played = audio_.tone(440, 110, kTick);
+      flashCount = 2;
       break;
     case FocusTimer::Cue::None:
     default:
@@ -5869,7 +6030,7 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
     return;
   }
 
-  const int flashCount = cue == FocusTimer::Cue::Start ? 1 : cue == FocusTimer::Cue::Cancelled ? 2 : 3;
+  // Audio path unavailable: fall back to a brief backlight flash.
   for (int i = 0; i < flashCount; ++i) {
     digitalWrite(BoardConfig::PIN_LCD_BACKLIGHT, HIGH);
     delay(55);
@@ -5881,8 +6042,10 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
 bool App::scrollModeEnabled() const { return readerMode_ == ReaderMode::Scroll; }
 
 bool App::uiRotated180() const {
-  return handednessMode_ == HandednessMode::Right ? BoardConfig::UI_ROTATED_180
-                                                  : !BoardConfig::UI_ROTATED_180;
+  const bool base = handednessMode_ == HandednessMode::Right ? BoardConfig::UI_ROTATED_180
+                                                            : !BoardConfig::UI_ROTATED_180;
+  // App-wide auto-rotate layers a 180 flip on top of the handedness base.
+  return base != autoFlip180_;
 }
 
 uint8_t App::effectiveAnchorPercent() const {
