@@ -15,6 +15,7 @@
 #include "app/OtaController.h"
 #include "app/TextEntryController.h"
 #include "display/StandbyScreensaver.h"
+#include "reader/TimeEstimateEngine.h"
 #include "input/ButtonHandler.h"
 #include "input/TouchHandler.h"
 #include "reader/ReadingLoop.h"
@@ -321,15 +322,6 @@ class App {
   String batteryTimeRemainingLabel() const;
   String batteryVoltageLabel() const;
   String formatBatteryTimeRemaining(uint32_t minutes) const;
-  uint32_t estimatedReadingTimeRemainingMs(size_t startIndex, size_t endIndex) const;
-  uint32_t estimatedPacingBonusMs(size_t startIndex, size_t endIndex) const;
-  void rebuildTimeEstimateCache();
-  void invalidateTimeEstimateCache();
-  void flushPendingTimeEstimateRebuild();
-  void cancelTimeEstimateBuild();
-  void updateTimeEstimateBuild(uint32_t nowMs);
-  bool timeEstimateBuildMatchesCurrentBook() const;
-  String formatReadingTimeRemaining(uint32_t remainingMs) const;
   String timeEstimateModeLabel() const;
   uint8_t readingProgressPercent() const;
   bool ensureCurrentBookWordAvailable(uint32_t nowMs);
@@ -390,6 +382,7 @@ class App {
   Preferences preferences_;
   ClockController clock_;
   OtaController ota_;
+  TimeEstimateEngine timeEstimate_;
   PausedTouchSession pausedTouch_;
   TouchIntent pausedTouchIntent_ = TouchIntent::None;
 
@@ -461,18 +454,6 @@ class App {
   std::vector<String> chapterMenuItems_;
   std::vector<ChapterMarker> chapterMarkers_;
   std::vector<size_t> paragraphStarts_;
-  std::vector<uint32_t> wordBonusBlockPrefixSumMs_;
-  String timeEstimateBuildBookPath_;
-  size_t timeEstimateBuildWordCount_ = 0;
-  size_t timeEstimateBuildBlockCount_ = 0;
-  size_t timeEstimateBuildNextBlock_ = 0;
-  uint32_t timeEstimateBuildRunningMs_ = 0;
-  uint32_t timeEstimateBuildStartedMs_ = 0;
-  uint32_t timeEstimateBuildLastLogMs_ = 0;
-  bool timeEstimateCacheValid_ = false;
-  bool timeEstimateBuildInProgress_ = false;
-  bool accurateTimeEstimateEnabled_ = true;
-  bool pacingCacheDirty_ = false;
   std::vector<DisplayManager::ContextWord> contextPreviewWords_;
   std::vector<WifiNetworkInfo> wifiNetworks_;
   String bootReason_;  // DEBUG: reset+wake cause shown on the boot splash

@@ -56,9 +56,6 @@ constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
 constexpr uint32_t kProgressSaveIntervalMs = 15000;
 constexpr uint32_t kUsbTransferExitHoldMs = 1200;
-constexpr size_t kTimeEstimateBlockWords = 256;
-constexpr size_t kTimeEstimateBlocksPerUpdate = 1;
-constexpr uint32_t kTimeEstimateProgressLogMs = 5000;
 constexpr uint32_t kNominalBatteryRuntimeMinutes = 450;  // ~7.5h with CPU frequency scaling (Balanced)
 constexpr uint8_t kBatteryDisplayHysteresisPercent = 2;
 constexpr uint8_t kBatteryRuntimeMinDropPercent = 3;
@@ -553,6 +550,12 @@ App::App()
           },
           [this](const char *title, const char *line1, const char *line2, int percent) {
             renderStorageStatus(title, line1, line2, percent);
+          }),
+      timeEstimate_(
+          reader_, [this]() { return state_; },
+          [this](uint32_t nowMs) { renderActiveReader(nowMs); }, [this]() { renderMenu(); },
+          [this](const char *title, const char *line1, const char *line2, int percent) {
+            renderStorageStatus(title, line1, line2, percent);
           }) {}
 
 void App::setBootReason(int resetReason, int wakeCause) {
@@ -705,7 +708,7 @@ void App::begin() {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
-  accurateTimeEstimateEnabled_ = true;
+  timeEstimate_.setAccurateEstimate(true);
   typographyConfig_ = defaultTypographyConfig();
   typographyConfig_.typeface = readerTypefaceFromSetting(
       preferences_.getUChar(kPrefReaderTypeface, static_cast<uint8_t>(typographyConfig_.typeface)));
@@ -784,7 +787,7 @@ void App::begin() {
     currentBookTitle_ = "Demo";
     reader_.begin(bootStartedMs_);
     invalidateContextPreviewWindow();
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
     Serial.println("[app] using built-in demo text");
   } else {
     currentBookTitle_ = storage_.bookDisplayName(pendingBootBookIndex_);
@@ -913,7 +916,7 @@ void App::update(uint32_t nowMs) {
   updateAutoDim(nowMs);
   updateBatteryRuntimeLabel(nowMs);
   maybeSaveReadingPosition(nowMs);
-  updateTimeEstimateBuild(nowMs);
+  timeEstimate_.update(nowMs, currentBookPath_);
 #if defined(BOARD_AMOLED_18)
   updateDeepStandbyIdle(nowMs);  // deep standby auto-enter (own configurable delay)
   if (state_ == AppState::PowerSaving) {
@@ -981,7 +984,7 @@ void App::setState(AppState nextState, uint32_t nowMs) {
 
   const AppState previousState = state_;
   if (previousState == AppState::Menu && nextState != AppState::Menu) {
-    flushPendingTimeEstimateRebuild();
+    timeEstimate_.flushPendingRebuild(currentBookPath_, currentBookTitle_);
   }
 
   // Accumulate active reading time for the completion-screen + lifetime stats.
@@ -1632,7 +1635,7 @@ void App::reloadRuntimePreferences(uint32_t nowMs, bool rerender) {
       loadPacingDelayMs(preferences_, kPrefPacingComplexMs, kPrefLegacyPacingComplex);
   pacingPunctuationDelayMs_ =
       loadPacingDelayMs(preferences_, kPrefPacingPunctuationMs, kPrefLegacyPacingPunctuation);
-  accurateTimeEstimateEnabled_ = true;
+  timeEstimate_.setAccurateEstimate(true);
 
   typographyConfig_ = defaultTypographyConfig();
   typographyConfig_.typeface = readerTypefaceFromSetting(
@@ -3249,7 +3252,7 @@ void App::selectSettingsItem(uint32_t nowMs) {
   bool pacingConfigChanged = false;
   switch (settingsSelectedIndex_) {
     case kSettingsBackIndex:
-      flushPendingTimeEstimateRebuild();
+      timeEstimate_.flushPendingRebuild(currentBookPath_, currentBookTitle_);
       settingsSelectedIndex_ = kSettingsHomePacingIndex;
       menuScreen_ = MenuScreen::SettingsHome;
       rebuildSettingsMenuItems();
@@ -3824,17 +3827,10 @@ void App::applyPacingSettings() {
                 static_cast<unsigned int>(pacingComplexWordDelayMs_),
                 static_cast<unsigned int>(pacingPunctuationDelayMs_));
   if (state_ == AppState::Menu && menuScreen_ == MenuScreen::SettingsPacing) {
-    pacingCacheDirty_ = true;
+    timeEstimate_.markPendingRebuild();
   } else {
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
   }
-}
-
-void App::flushPendingTimeEstimateRebuild() {
-  if (!pacingCacheDirty_) {
-    return;
-  }
-  rebuildTimeEstimateCache();
 }
 
 OtaUpdater::Config App::preferredOtaConfig() {
@@ -4942,7 +4938,7 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   renderStorageStatus("Opening book", loadedTitle.c_str(), "Loading word cache", 70);
 
   const bool keepingExistingTimeCache =
-      !rebuildTimeEstimate && timeEstimateCacheValid_ && currentBookPath_ == loadedPath;
+      !rebuildTimeEstimate && timeEstimate_.cacheValid() && currentBookPath_ == loadedPath;
   reader_.setWordSource(&activeBookStore_, nowMs);
   if (reader_.wordCount() == 0 || reader_.currentWord().isEmpty()) {
     Serial.printf("[app] failed to read first indexed word from %s\n", loadedPath.c_str());
@@ -4991,9 +4987,9 @@ bool App::loadBookAtIndex(size_t index, uint32_t nowMs, bool allowLegacyPosition
   }
 
   if (rebuildTimeEstimate) {
-    rebuildTimeEstimateCache();
+    timeEstimate_.rebuild(currentBookPath_, currentBookTitle_);
   } else if (!keepingExistingTimeCache) {
-    invalidateTimeEstimateCache();
+    timeEstimate_.invalidate();
   } else {
     renderStorageStatus("Opening book", currentBookTitle_.c_str(), "Using cached estimate", 92);
   }
@@ -5752,13 +5748,10 @@ String App::currentFooterMetricLabel() const {
 
   const size_t currentIndex = std::min(reader_.currentIndex(), wordCount - 1);
   size_t endIndex = wordCount;
-  const bool generatingEstimate = accurateTimeEstimateEnabled_ && timeEstimateBuildInProgress_ &&
-                                  timeEstimateBuildMatchesCurrentBook();
-  const int generatingPercent =
-      generatingEstimate
-          ? static_cast<int>((timeEstimateBuildNextBlock_ * 100UL) /
-                             std::max<size_t>(1, timeEstimateBuildBlockCount_))
-          : 0;
+  const bool generatingEstimate = timeEstimate_.accurateEstimate() &&
+                                  timeEstimate_.buildInProgress() &&
+                                  timeEstimate_.buildMatchesCurrentBook(currentBookPath_);
+  const int generatingPercent = generatingEstimate ? timeEstimate_.buildProgressPercent() : 0;
 
   if (footerMetricMode_ == FooterMetricMode::ChapterTime) {
     const size_t chapterIndex = currentChapterIndex();
@@ -5769,14 +5762,16 @@ String App::currentFooterMetricLabel() const {
       return String("CH ") + String(generatingPercent) + "% gen";
     }
     return String("CH ") +
-           formatReadingTimeRemaining(estimatedReadingTimeRemainingMs(currentIndex, endIndex));
+           TimeEstimateEngine::formatReadingTimeRemaining(
+               timeEstimate_.estimatedReadingTimeRemainingMs(currentIndex, endIndex));
   }
 
   if (generatingEstimate) {
     return String("BOOK ") + String(generatingPercent) + "% gen";
   }
   return String("BOOK ") +
-         formatReadingTimeRemaining(estimatedReadingTimeRemainingMs(currentIndex, endIndex));
+         TimeEstimateEngine::formatReadingTimeRemaining(
+             timeEstimate_.estimatedReadingTimeRemainingMs(currentIndex, endIndex));
 }
 
 String App::currentBatteryLabel() const {
@@ -5899,229 +5894,9 @@ String App::formatBatteryTimeRemaining(uint32_t minutes) const {
   return String(hours) + "h" + String(remainder / 10) + "0";
 }
 
-uint32_t App::estimatedReadingTimeRemainingMs(size_t startIndex, size_t endIndex) const {
-  const size_t wordCount = reader_.wordCount();
-  if (wordCount == 0 || reader_.wpm() == 0) {
-    return 0;
-  }
-
-  startIndex = std::min(startIndex, wordCount);
-  endIndex = std::min(endIndex, wordCount);
-  if (endIndex <= startIndex) {
-    return 0;
-  }
-
-  const uint32_t baseMs = static_cast<uint32_t>(
-      (static_cast<uint64_t>(endIndex - startIndex) * 60000ULL) /
-      static_cast<uint64_t>(reader_.wpm()));
-
-  if (!accurateTimeEstimateEnabled_ || !timeEstimateCacheValid_) {
-    return baseMs;
-  }
-
-  return baseMs + estimatedPacingBonusMs(startIndex, endIndex);
-}
-
-uint32_t App::estimatedPacingBonusMs(size_t startIndex, size_t endIndex) const {
-  if (!timeEstimateCacheValid_ || wordBonusBlockPrefixSumMs_.empty() ||
-      endIndex <= startIndex) {
-    return 0;
-  }
-
-  const size_t wordCount = reader_.wordCount();
-  startIndex = std::min(startIndex, wordCount);
-  endIndex = std::min(endIndex, wordCount);
-  if (endIndex <= startIndex) {
-    return 0;
-  }
-
-  const size_t firstFullBlock = (startIndex + kTimeEstimateBlockWords - 1) /
-                                kTimeEstimateBlockWords;
-  const size_t lastFullBlockEnd = endIndex / kTimeEstimateBlockWords;
-  uint32_t bonusMs = 0;
-
-  if (firstFullBlock < lastFullBlockEnd &&
-      lastFullBlockEnd < wordBonusBlockPrefixSumMs_.size()) {
-    const size_t startPartialEnd =
-        std::min(endIndex, firstFullBlock * kTimeEstimateBlockWords);
-    for (size_t i = startIndex; i < startPartialEnd; ++i) {
-      bonusMs += reader_.wordPacingBonusMsAt(i);
-    }
-
-    bonusMs += wordBonusBlockPrefixSumMs_[lastFullBlockEnd] -
-               wordBonusBlockPrefixSumMs_[firstFullBlock];
-
-    const size_t endPartialStart = lastFullBlockEnd * kTimeEstimateBlockWords;
-    for (size_t i = endPartialStart; i < endIndex; ++i) {
-      bonusMs += reader_.wordPacingBonusMsAt(i);
-    }
-    return bonusMs;
-  }
-
-  for (size_t i = startIndex; i < endIndex; ++i) {
-    bonusMs += reader_.wordPacingBonusMsAt(i);
-  }
-  return bonusMs;
-}
-
-void App::invalidateTimeEstimateCache() {
-  cancelTimeEstimateBuild();
-  timeEstimateCacheValid_ = false;
-  std::vector<uint32_t>().swap(wordBonusBlockPrefixSumMs_);
-}
-
-void App::rebuildTimeEstimateCache() {
-  invalidateTimeEstimateCache();
-  pacingCacheDirty_ = false;
-  if (!accurateTimeEstimateEnabled_) {
-    if (!currentBookTitle_.isEmpty()) {
-      renderStorageStatus("Reading time", currentBookTitle_.c_str(), "Fast estimate enabled",
-                          100);
-    }
-    return;
-  }
-
-  const size_t n = reader_.wordCount();
-  if (n == 0) {
-    return;
-  }
-
-  const String label = currentBookTitle_.isEmpty() ? String("Current book") : currentBookTitle_;
-  timeEstimateBuildWordCount_ = n;
-  timeEstimateBuildBlockCount_ =
-      (timeEstimateBuildWordCount_ + kTimeEstimateBlockWords - 1) / kTimeEstimateBlockWords;
-  if (timeEstimateBuildBlockCount_ == 0) {
-    return;
-  }
-
-  wordBonusBlockPrefixSumMs_.assign(timeEstimateBuildBlockCount_ + 1, 0);
-  timeEstimateBuildBookPath_ = currentBookPath_;
-  timeEstimateBuildNextBlock_ = 0;
-  timeEstimateBuildRunningMs_ = 0;
-  timeEstimateBuildStartedMs_ = millis();
-  timeEstimateBuildLastLogMs_ = timeEstimateBuildStartedMs_;
-  timeEstimateBuildInProgress_ = true;
-
-  const String detail = String(static_cast<unsigned int>(n)) + " words in background";
-  renderStorageStatus("Reading time", label.c_str(), detail.c_str(), 0);
-  Serial.printf("[time-est] background build started words=%u blocks=%u book=%s\n",
-                static_cast<unsigned int>(timeEstimateBuildWordCount_),
-                static_cast<unsigned int>(timeEstimateBuildBlockCount_),
-                currentBookPath_.c_str());
-}
-
-void App::cancelTimeEstimateBuild() {
-  timeEstimateBuildInProgress_ = false;
-  timeEstimateBuildBookPath_ = "";
-  timeEstimateBuildWordCount_ = 0;
-  timeEstimateBuildBlockCount_ = 0;
-  timeEstimateBuildNextBlock_ = 0;
-  timeEstimateBuildRunningMs_ = 0;
-  timeEstimateBuildStartedMs_ = 0;
-  timeEstimateBuildLastLogMs_ = 0;
-}
-
-bool App::timeEstimateBuildMatchesCurrentBook() const {
-  return timeEstimateBuildInProgress_ && timeEstimateBuildBookPath_ == currentBookPath_ &&
-         timeEstimateBuildWordCount_ == reader_.wordCount();
-}
-
-void App::updateTimeEstimateBuild(uint32_t nowMs) {
-  if (!timeEstimateBuildInProgress_) {
-    return;
-  }
-
-  if (!accurateTimeEstimateEnabled_ || !timeEstimateBuildMatchesCurrentBook()) {
-    Serial.println("[time-est] background build cancelled");
-    invalidateTimeEstimateCache();
-    return;
-  }
-
-  if (state_ == AppState::Playing || state_ == AppState::CompanionSync ||
-      state_ == AppState::UsbTransfer || state_ == AppState::Standby ||
-      state_ == AppState::Sleeping) {
-    return;
-  }
-
-  size_t processedBlocks = 0;
-  while (timeEstimateBuildNextBlock_ < timeEstimateBuildBlockCount_ &&
-         processedBlocks < kTimeEstimateBlocksPerUpdate) {
-    const size_t block = timeEstimateBuildNextBlock_;
-    wordBonusBlockPrefixSumMs_[block] = timeEstimateBuildRunningMs_;
-    const size_t blockStart = block * kTimeEstimateBlockWords;
-    const size_t blockEnd =
-        std::min(timeEstimateBuildWordCount_, blockStart + kTimeEstimateBlockWords);
-    for (size_t i = blockStart; i < blockEnd; ++i) {
-      timeEstimateBuildRunningMs_ += reader_.wordPacingBonusMsAt(i);
-    }
-    ++timeEstimateBuildNextBlock_;
-    ++processedBlocks;
-    delay(0);
-  }
-
-  if (timeEstimateBuildNextBlock_ >= timeEstimateBuildBlockCount_) {
-    wordBonusBlockPrefixSumMs_[timeEstimateBuildBlockCount_] = timeEstimateBuildRunningMs_;
-    timeEstimateCacheValid_ = true;
-    const uint32_t elapsedMs = millis() - timeEstimateBuildStartedMs_;
-    Serial.printf("[time-est] background cached %u words in %u blocks bonus=%lums took=%lums\n",
-                  static_cast<unsigned int>(timeEstimateBuildWordCount_),
-                  static_cast<unsigned int>(timeEstimateBuildBlockCount_),
-                  static_cast<unsigned long>(timeEstimateBuildRunningMs_),
-                  static_cast<unsigned long>(elapsedMs));
-    cancelTimeEstimateBuild();
-    if (state_ == AppState::Paused || state_ == AppState::Playing) {
-      renderActiveReader(nowMs);
-    } else if (state_ == AppState::Menu) {
-      renderMenu();
-    }
-    return;
-  }
-
-  if (nowMs - timeEstimateBuildLastLogMs_ >= kTimeEstimateProgressLogMs) {
-    const int progress =
-        static_cast<int>((timeEstimateBuildNextBlock_ * 100UL) /
-                         std::max<size_t>(1, timeEstimateBuildBlockCount_));
-    Serial.printf("[time-est] background progress %u/%u blocks (%d%%)\n",
-                  static_cast<unsigned int>(timeEstimateBuildNextBlock_),
-                  static_cast<unsigned int>(timeEstimateBuildBlockCount_), progress);
-    timeEstimateBuildLastLogMs_ = nowMs;
-    if (state_ == AppState::Paused) {
-      renderActiveReader(nowMs);
-    }
-  }
-}
-
 String App::timeEstimateModeLabel() const {
-  return uiText(accurateTimeEstimateEnabled_ ? UiText::TimeEstimateAccurate
-                                             : UiText::TimeEstimateFast);
-}
-
-String App::formatReadingTimeRemaining(uint32_t remainingMs) const {
-  const uint32_t totalSeconds = remainingMs / 1000UL;
-  if (totalSeconds < 60UL) {
-    return "0m";
-  }
-
-  const uint32_t totalMinutes = totalSeconds / 60UL;
-  if (totalMinutes < 60UL) {
-    return String(totalMinutes) + "m";
-  }
-
-  const uint32_t totalHours = totalMinutes / 60UL;
-  const uint32_t minutes = totalMinutes % 60UL;
-  if (totalHours < 24UL) {
-    if (minutes == 0) {
-      return String(totalHours) + "h";
-    }
-    return String(totalHours) + "h" + String(minutes) + "m";
-  }
-
-  const uint32_t days = totalHours / 24UL;
-  const uint32_t hours = totalHours % 24UL;
-  if (hours == 0) {
-    return String(days) + "d";
-  }
-  return String(days) + "d" + String(hours) + "h";
+  return uiText(timeEstimate_.accurateEstimate() ? UiText::TimeEstimateAccurate
+                                                 : UiText::TimeEstimateFast);
 }
 
 uint8_t App::readingProgressPercent() const {
@@ -6399,7 +6174,7 @@ void App::handleCurrentBookReadFailure(uint32_t nowMs, const char *detail) {
   contextViewVisible_ = false;
   wpmFeedbackVisible_ = false;
   invalidateContextPreviewWindow();
-  invalidateTimeEstimateCache();
+  timeEstimate_.invalidate();
 
   setState(AppState::Menu, nowMs);
   display_.renderStatus("Book read failed", failedTitle,
