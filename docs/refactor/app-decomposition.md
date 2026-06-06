@@ -141,6 +141,35 @@ After all steps, `App` holds: the subsystem/controller members, `begin()`,
 `update()`, `setState()`/`updateState()`, `dispatchButtons()` routing, and
 `stateName()`. Target: **under ~800 lines.**
 
+## Final outcome (2026-06-06) — STOPPED at "coordinator core"
+Extracted: 1 StandbyScreensaver, 2 TextEntryController, 3 ClockController,
+4 OtaController, 5 TimeEstimateEngine, 7 BookLibraryStore (per-book NVS slice).
+Not extracted: 6 PowerManager/BatteryMonitor (§6), 8 ReaderUI, 9 MenuController,
+10 Labels.
+
+**App.cpp: 7811 → 6262 lines.** Base hardware-verified at commit `5ed6d17`
+(after step 5); subsequent steps build-green on both envs.
+
+**Why we stopped (decided with the user):** the ~800-line target assumed every
+domain peels cleanly. It does not. The clean *peripheral* subsystems are now out.
+What remains is App's genuine, largely irreducible coordinator core:
+- **ReaderUI** — `renderActiveReader` and its render tree read 25+ App
+  members (reader, chapters/paragraphs, current book, state, time estimate,
+  typography, footer mode, battery, scroll/context/wpm flags); `handleReaderTap`
+  (~300 lines) *is* the reading-input state machine. Extracting it
+  behavior-preserving needs a shared reader view-model (an MVC rewrite), not a
+  move — net negative, in the most-touched path.
+- **Power/Battery (§6)** — state-machine + PMU + wake/charge; `wakeFromSleep`
+  replays half of `begin()`.
+- **MenuController** — separable in principle (per-screen items/render/select on
+  `menuScreen_`), the best remaining *clean* win if the work resumes, but it was
+  deprioritised once "accept core" was chosen.
+
+The remaining peelable-clean candidates, if ever wanted: a ContextPreview window
+model (~100 lines, deps `reader_` + `paragraphStarts_`) and MenuController
+(facade-first). Neither is required; App is now a coordinator with its core
+intact and all genuinely-separable subsystems extracted.
+
 ## Extraction protocol (per module)
 1. New `.h`/`.cpp`; move enum/struct/state/methods verbatim.
 2. Replace member access with the injected collaborator references.
@@ -164,5 +193,7 @@ After all steps, `App` holds: the subsystem/controller members, `begin()`,
 ## Suggested order recap
 1. StandbyScreensaver ✅ → 2. TextEntryController ✅ → 3. ClockController ✅ →
 4. OtaController ✅ → 5. TimeEstimateEngine ✅ → 6. BatteryMonitor + PowerManager
-**(kept in App — see §6)** → 7. BookSession → 8. ReaderUI →
-9. MenuController (multi-commit) → 10. Labels.
+**(kept in App — §6)** → 7. BookLibraryStore ✅ (NVS slice of BookSession) →
+8. ReaderUI **(kept in App — core)** → 9. MenuController **(not done)** →
+10. Labels **(not done)**. **Refactor stopped at the coordinator core — see
+"Final outcome".**
