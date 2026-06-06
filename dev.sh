@@ -23,22 +23,15 @@ save_conf() { printf 'ENV=%q\nPORT=%q\nVERSION=%q\n' "$ENV" "$PORT" "$VERSION" >
 VALID_ENVS=(amoled waveshare_esp32s3_usb_msc native_test)
 ESPRESSIF_VID="0x303a"
 
-# ---- palette + box drawing ------------------------------------------------
+# ---- palette --------------------------------------------------------------
 r=$'\033[0m'; b=$'\033[1m'; dim=$'\033[2m'
 grn=$'\033[32m'; yel=$'\033[33m'; red=$'\033[31m'; cyn=$'\033[36m'
-W=43                                  # inner content width (ASCII only inside)
-
-_dash() { printf '─%.0s' $(seq 1 "$1"); }
-btop()  { local t=" $1 "; printf "%s┌─%s" "$cyn" "$t"; _dash $((W+1-${#t})); printf "┐%s\n" "$r"; }
-bsep()  { printf "%s├" "$cyn"; _dash $((W+2)); printf "┤%s\n" "$r"; }
-bbot()  { printf "%s└" "$cyn"; _dash $((W+2)); printf "┘%s\n" "$r"; }
-bline() { printf "%s│%s %-*.*s %s│%s\n" "$cyn" "$r" "$W" "$W" "$1" "$cyn" "$r"; }
 
 info()  { printf "  %s\n" "$1"; }
 ok()    { printf "  %s✓%s %s\n" "$grn" "$r" "$1"; }
 warn()  { printf "  %s!%s %s\n" "$yel" "$r" "$1"; }
 err()   { printf "  %s✗%s %s\n" "$red" "$r" "$1"; }
-pause() { read -rp $'\n'"  ${dim}enter to continue...${r}" _ || true; }
+pause() { read -rsn1 -p $'\n'"  ${dim}press any key to continue...${r}" _ || true; printf "\n"; }
 
 # ---- tool discovery -------------------------------------------------------
 find_pio() {
@@ -101,7 +94,16 @@ friendly() {
 }
 
 resolved_port() {
-  if [[ "$PORT" == "auto" ]]; then esp_ports | head -n1; else echo "$PORT"; fi
+  if [[ "$PORT" == "auto" ]]; then serial_ports | head -n1; else echo "$PORT"; fi
+}
+
+serial_ports() {
+  ls -1 /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null | sort
+}
+
+port_present() {
+  local port="$1"
+  serial_ports | grep -Fxq "$port"
 }
 
 # ---- esptool probe + guided wait ------------------------------------------
@@ -160,6 +162,23 @@ wait_for_device() {  # guided BOOT-hold loop; echoes a reachable port or empty
   done
 }
 
+wait_for_serial_device() {  # wait for any serial device to reappear
+  printf "\n  %sWaiting for a USB serial device to come back...%s\n" "$dim" "$r"
+  printf "  %spress c to cancel%s\n\n" "$dim" "$r"
+  local i=0 key ports
+  while true; do
+    i=$(((i+1)%10))
+    printf "\r  %s%s%s scanning for serial ports... " "$cyn" "${spin:$i:1}" "$r"
+    read -rsn1 -t 1 key && [[ "$key" == "c" ]] && { printf "\r%-60s\r" " "; return 1; }
+    mapfile -t ports < <(serial_ports)
+    if [[ ${#ports[@]} -gt 0 ]]; then
+      printf "\r  %s✓%s found %s\n" "$grn" "$r" "$(short "${ports[0]}")"
+      echo "${ports[0]}"
+      return 0
+    fi
+  done
+}
+
 # ---- device picker --------------------------------------------------------
 pick_device() {  # echoes chosen port or empty; interactive on stderr
   local all=() labels=() p v n
@@ -174,20 +193,75 @@ pick_device() {  # echoes chosen port or empty; interactive on stderr
   if [[ ${#all[@]} -eq 1 ]]; then echo "${all[0]}"; return 0; fi
 
   {
-    printf "\n  %sMultiple devices found — pick one:%s\n" "$b" "$r"
+    printf "\n  %sMultiple devices found:%s\n" "$b" "$r"
     local i
     for i in "${!all[@]}"; do
-      printf "   %s%2d%s) %s\n        %s%s%s\n" \
+      printf "   %s%d%s) %s\n      %s%s%s\n" \
         "$b" $((i+1)) "$r" "${labels[$i]}" "$dim" "${all[$i]}" "$r"
     done
-    printf "    %sr%s) rescan\n" "$b" "$r"
+    printf "   %sr%s) rescan\n" "$b" "$r"
   } >&2
   local sel
-  read -rp "  choice: " sel >&2
+  IFS= read -rsn1 -p "  choice: " sel >&2
+  printf "\n" >&2
   if [[ "$sel" == "r" ]]; then pick_device; return; fi
   if [[ "$sel" =~ ^[0-9]+$ ]] && (( sel>=1 && sel<=${#all[@]} )); then
     echo "${all[$((sel-1))]}"
   else echo ""; fi
+}
+
+monitor_port() {
+  local ports=() p choice i
+
+  if [[ "$PORT" != "auto" ]]; then
+    if port_present "$PORT"; then
+      echo "$PORT"
+      return 0
+    fi
+    warn "Saved monitor port is gone; rescanning."
+  fi
+
+  mapfile -t ports < <(serial_ports)
+  if [[ ${#ports[@]} -eq 1 ]]; then
+    echo "${ports[0]}"
+    return 0
+  fi
+
+  while true; do
+    mapfile -t ports < <(serial_ports)
+    if [[ ${#ports[@]} -eq 1 ]]; then
+      echo "${ports[0]}"
+      return 0
+    fi
+
+    if [[ ${#ports[@]} -gt 1 ]]; then
+      printf "\n  %sSerial ports detected:%s\n" "$b" "$r"
+      for i in "${!ports[@]}"; do
+        printf "   %s%d%s) %s\n" "$b" $((i+1)) "$r" "$(short "${ports[$i]}")"
+      done
+      printf "   %sr%s) rescan\n" "$b" "$r"
+      printf "   %sc%s) cancel\n" "$b" "$r"
+      IFS= read -rsn1 -p "  pick: " choice
+      printf "\n"
+      if [[ "$choice" == "r" || "$choice" == "R" ]]; then
+        continue
+      fi
+      if [[ "$choice" == "c" || "$choice" == "C" || "$choice" == "q" || "$choice" == "Q" ]]; then
+        return 1
+      fi
+      if [[ "$choice" =~ ^[0-9]$ ]] && (( choice>=1 && choice<=${#ports[@]} )); then
+        echo "${ports[$((choice-1))]}"
+        return 0
+      fi
+      continue
+    fi
+
+    p="$(wait_for_serial_device)" || return 1
+    if [[ -n "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
 }
 
 # ---- actions --------------------------------------------------------------
@@ -223,13 +297,10 @@ do_build() {
   else $PIO run -e "$ENV"; fi
 }
 do_monitor() {
-  local p; p="$(resolved_port)"
-  if [[ -z "$p" ]]; then
-    err "No Espressif board detected — nothing to monitor."
-    info "Plug the board in (it re-enumerates after a reset; a cold unplug/replug helps)."
-    info "Then press r to rescan. Refusing to fall back to a stray port (e.g. Bluetooth)."
-    return 1
-  fi
+  local p
+  printf "\n  %sRescanning USB for monitor target...%s\n" "$dim" "$r"
+  p="$(monitor_port)" || { err "Cancelled."; return 1; }
+  ok "Monitor target: $(friendly "$(name_for "$p" 2>/dev/null)") — $(short "$p")"
   printf "\n  %sCtrl-C to exit monitor%s\n\n" "$dim" "$r"
   $PIO device monitor -p "$p" -b 115200
 }
@@ -268,27 +339,22 @@ menu() {
   if [[ -n "$p" ]]; then status="$(friendly "$(name_for "$p")") - ready"
   else status="not detected"; fi
 
-  btop "RSVP Nano installer"
-  bline "device   $status"
-  if [[ "$PORT" == "auto" ]]; then bline "port     $(short "${p:-none}") (auto)"
-  else bline "port     $(short "$PORT")"; fi
-  bline "env      $ENV"
-  bline "version  ${VERSION:-(none)}"
-  bsep
-  bline " 1  Flash device (guided)"
-  bline " 2  Build firmware"
-  bline " 3  Flash + monitor"
-  bline " 4  Serial monitor"
-  bline " 5  Run tests"
-  bline " 6  Clean build"
-  bline " 7  Export web firmware"
-  bline " 8  Doctor (diagnose)"
-  bsep
-  bline " e env   p port   v version   r rescan"
-  bline " q quit"
-  bbot
-  printf "  choice %s▸%s " "$cyn" "$r"
-  read -r choice || { echo; exit 0; }
+  printf "%sRSVP Nano%s\n" "$b" "$r"
+  printf "device : %s\n" "$status"
+  if [[ "$PORT" == "auto" ]]; then
+    printf "port   : %s (auto)\n" "$(short "${p:-none}")"
+  else
+    printf "port   : %s\n" "$(short "$PORT")"
+  fi
+  printf "env    : %s\n" "$ENV"
+  printf "ver    : %s\n" "${VERSION:-(none)}"
+  printf "\n"
+  printf "1 flash   2 build   3 flash+monitor   4 monitor\n"
+  printf "5 test    6 clean   7 export-web      8 doctor\n"
+  printf "e env     p port    v version        r rescan   q quit\n"
+  printf "choice: "
+  IFS= read -rsn1 choice || { echo; exit 0; }
+  printf "\n"
   case "$choice" in
     1) do_flash;          pause ;;
     2) do_build;          pause ;;
@@ -311,19 +377,21 @@ choose_env() {
   printf "\n  Build env:\n"
   local i=1 e
   for e in "${VALID_ENVS[@]}"; do printf "   %s%d%s) %s\n" "$b" "$i" "$r" "$e"; ((i++)); done
-  read -rp "  env [1-${#VALID_ENVS[@]}]: " sel
+  IFS= read -rsn1 -p "  env [1-${#VALID_ENVS[@]}]: " sel
+  printf "\n"
   [[ "$sel" =~ ^[0-9]+$ ]] && (( sel>=1 && sel<=${#VALID_ENVS[@]} )) && ENV="${VALID_ENVS[$((sel-1))]}"
 }
 choose_port() {
   local picked; picked="$(pick_device)"
   if [[ -n "$picked" ]]; then
-    read -rp "  set fixed port to $(short "$picked")? [Y/n] (n = auto) " yn
+    IFS= read -rsn1 -p "  set fixed port to $(short "$picked")? [Y/n] (n = auto) " yn
+    printf "\n"
     if [[ "$yn" =~ ^[Nn] ]]; then PORT="auto"; else PORT="$picked"; fi
   else
     PORT="auto"; warn "no device; left on auto"; sleep 1
   fi
 }
-set_version() { read -rp "  version label (blank = none): " VERSION; }
+set_version() { IFS= read -r -p "  version label (blank = none): " VERSION; }
 
 # ---- entry ----------------------------------------------------------------
 # If sourced (e.g. for tests) stop here without launching the menu.
@@ -332,7 +400,8 @@ set_version() { read -rp "  version label (blank = none): " VERSION; }
 case "${1:-}" in
   flash)  do_flash; exit $? ;;
   build)  do_build; exit $? ;;
+  monitor) do_monitor; exit $? ;;
   doctor) doctor; echo; exit 0 ;;
   menu|"") while true; do menu; done ;;
-  *) echo "usage: $0 [menu|flash|build|doctor]"; exit 1 ;;
+  *) echo "usage: $0 [menu|flash|build|monitor|doctor]"; exit 1 ;;
 esac

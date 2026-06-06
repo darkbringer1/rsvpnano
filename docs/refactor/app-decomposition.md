@@ -76,19 +76,28 @@ Listed low-coupling → high-coupling (also the extraction order).
 - **State:** `timeEstimateBuild*`, `wordBonusBlockPrefixSumMs_`.
 - **Deps:** `ReadingLoop&` / current-book word data, pacing config.
 
-### 6. `power/PowerManager` (+ `power/BatteryMonitor`)
-- **BatteryMonitor owns:** `updateBatteryStatus`, `updateBatteryRuntimeLabel`,
-  `nominalBatteryRuntimeMinutes`, `currentBatteryLabel`, `battery*Label`,
-  `formatBatteryTimeRemaining`, `handleBatteryProtection`, `showLowBatteryWarning`,
-  `updateBatteryWarningOverlay`. Deps: PMU (BoardConfig), `DisplayManager&`.
-- **PowerManager owns:** `enter/exitStandby`, `enter/exitPowerSaving`,
-  `updateIdleStandby`, `updateDeepStandbyIdle`, `handleAmoledStandbyWake`,
-  `enterSleep`, `wakeFromSleep`, `enterPowerOff`, `updatePmuPowerKey`,
-  `applyStateCpuFrequency`, `updateAutoDim`, `restoreFromAutoDim`, `noteActivity`.
-- **Coupling note:** PowerManager drives `AppState` transitions → it needs a
-  narrow interface to App: `requestState(AppState)`, `currentState()`,
-  `returnStateAfterStandby()`. Define that interface explicitly; don't hand it
-  the whole `App`.
+### 6. `power/PowerManager` (+ `power/BatteryMonitor`) — **KEPT IN APP (decided 2026-06-06)**
+**Decision: not extracted.** Power/battery transitions are App state-machine
+core, and the surface is too entangled to extract behavior-preserving with a
+narrow interface:
+- `wakeFromSleep` replays half of `begin()`; the power methods touch ~20 App
+  session members (state, touch, reader, display, screensaver, storage, menu).
+- `handlePowerButton` stays in App but calls 4 power methods; `handleBatteryProtection`
+  calls `enterPowerOff`; `showLowBatteryWarning` resets touch/reader session state
+  and calls `setState`.
+- BatteryMonitor's surface is inflated by reader-UI + menu code: `batteryLabelMode_`
+  is cycled (with `currentBatteryLabel()`+`setBatteryLabel()`) in the badge tap, the
+  reader tap path, and Settings>Battery — all of which live in modules 8/9.
+- `nominalBatteryRuntimeMinutes` reads CPU-freq config + scrollMode + OTA cache.
+
+Extracting now would mean a ~10–15 callback/accessor "interface" (App-with-
+indirection, not a real module) in the highest-risk code (power/wake/charge).
+Net negative. Power stays in App; `applyStateCpuFrequency`/`noteActivity` etc.
+remain alongside `setState`/`update()` as legitimate coordinator responsibilities.
+
+(Reconsider only if a future need arises; modules 8/9 would first have to absorb
+the label-cycle/tap/menu coupling, after which a BatteryMonitor data+protection
+unit could be peeled more cleanly.)
 
 ### 7. `book/BookSession`
 - **Owns:** `loadBookAtIndex`, `loadPendingBootBook`, `prepareBootBookLoad`,
@@ -153,6 +162,7 @@ After all steps, `App` holds: the subsystem/controller members, `begin()`,
   v0.2.0 baseline.
 
 ## Suggested order recap
-1. StandbyScreensaver → 2. TextEntryController → 3. ClockController →
-4. OtaController → 5. TimeEstimateEngine → 6. BatteryMonitor + PowerManager →
-7. BookSession → 8. ReaderUI → 9. MenuController (multi-commit) → 10. Labels.
+1. StandbyScreensaver ✅ → 2. TextEntryController ✅ → 3. ClockController ✅ →
+4. OtaController ✅ → 5. TimeEstimateEngine ✅ → 6. BatteryMonitor + PowerManager
+**(kept in App — see §6)** → 7. BookSession → 8. ReaderUI →
+9. MenuController (multi-commit) → 10. Labels.
