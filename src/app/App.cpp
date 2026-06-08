@@ -172,13 +172,14 @@ constexpr size_t kSettingsHomeUpdateIndex = 7;
 constexpr size_t kSettingsHomeFirmwareVersionIndex = 8;
 // Settings > Clock page rows.
 constexpr size_t kSettingsClockSyncIndex = 1;
-constexpr size_t kSettingsClockTimezoneIndex = 2;
-constexpr size_t kSettingsClockYearIndex = 3;
-constexpr size_t kSettingsClockMonthIndex = 4;
-constexpr size_t kSettingsClockDayIndex = 5;
-constexpr size_t kSettingsClockHourIndex = 6;
-constexpr size_t kSettingsClockMinuteIndex = 7;
-constexpr size_t kSettingsClockStatusIndex = 8;
+constexpr size_t kSettingsClockAutoIndex = 2;
+constexpr size_t kSettingsClockTimezoneIndex = 3;
+constexpr size_t kSettingsClockYearIndex = 4;
+constexpr size_t kSettingsClockMonthIndex = 5;
+constexpr size_t kSettingsClockDayIndex = 6;
+constexpr size_t kSettingsClockHourIndex = 7;
+constexpr size_t kSettingsClockMinuteIndex = 8;
+constexpr size_t kSettingsClockStatusIndex = 9;
 constexpr size_t kSettingsDisplayThemeIndex = 1;
 constexpr size_t kSettingsDisplayBrightnessIndex = 2;
 constexpr size_t kSettingsDisplayHandednessIndex = 3;
@@ -787,7 +788,15 @@ void App::begin() {
     }
   }
 
-  maybeAutoCheckForUpdates(bootStartedMs_);
+  // Auto clock sync and Auto OTA both need the single Wi-Fi STA, so chain them:
+  // if a background clock sync starts now, the OTA check is deferred until it
+  // finishes (see the pollSync handling in the main loop).
+  maybeAutoSyncClock(bootStartedMs_);
+  if (clock_.syncInProgress()) {
+    otaCheckDeferredForClock_ = true;
+  } else {
+    maybeAutoCheckForUpdates(bootStartedMs_);
+  }
   Serial.printf("[app] WPM=%u interval=%lu ms\n", reader_.wpm(),
                 static_cast<unsigned long>(reader_.wordIntervalMs()));
 
@@ -896,6 +905,10 @@ void App::update(uint32_t nowMs) {
   }
 
   ota_.pollResult(nowMs);
+  if (clock_.pollSync(nowMs) && otaCheckDeferredForClock_) {
+    otaCheckDeferredForClock_ = false;
+    maybeAutoCheckForUpdates(nowMs);  // Wi-Fi is free again now the clock sync is done
+  }
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
@@ -1321,7 +1334,7 @@ void App::handleAmoledButton(uint32_t nowMs) {
     return;
   }
 
-  toggleMenuFromPowerButton(nowMs);
+  menuBackOneLevel(nowMs);
 }
 #endif
 
@@ -1460,7 +1473,7 @@ void App::handlePowerButton(uint32_t nowMs) {
     return;
   }
 
-  toggleMenuFromPowerButton(nowMs);
+  menuBackOneLevel(nowMs);
 }
 
 void App::toggleMenuFromPowerButton(uint32_t nowMs) {
@@ -1484,6 +1497,40 @@ void App::toggleMenuFromPowerButton(uint32_t nowMs) {
   }
 
   openMainMenu(nowMs);
+}
+
+void App::menuBackOneLevel(uint32_t nowMs) {
+  // Swipe-right / hardware back should pop exactly ONE level, mirroring the
+  // per-screen "Back" row, instead of collapsing straight to Main. Only the
+  // two-levels-deep screens need special handling; everything else (one level
+  // below Main, or not in the menu at all) falls through to the toggle, which
+  // already does Main->resume / one-level->Main / closed->open.
+  if (state_ != AppState::Menu) {
+    toggleMenuFromPowerButton(nowMs);
+    return;
+  }
+
+  switch (menuScreen_) {
+    case MenuScreen::SettingsDisplay:
+    case MenuScreen::SettingsPacing:
+    case MenuScreen::SettingsBattery:
+    case MenuScreen::SettingsClock:
+    case MenuScreen::WifiSettings:
+      settingsSelectedIndex_ = kSettingsBackIndex;
+      selectSettingsItem(nowMs);  // routes to the screen's Back handler -> SettingsHome
+      return;
+    case MenuScreen::WifiNetworks:
+      wifiNetworkSelectedIndex_ = kWifiNetworksBackIndex;
+      selectWifiNetworkItem(nowMs);  // -> WifiSettings
+      return;
+    case MenuScreen::TypographyTuning:
+      typographyTuningSelectedIndex_ = TypographyTuningBack;
+      selectTypographyTuningItem(nowMs);  // -> SettingsHome
+      return;
+    default:
+      toggleMenuFromPowerButton(nowMs);
+      return;
+  }
 }
 
 void App::openMainMenu(uint32_t nowMs) {
@@ -2619,12 +2666,13 @@ void App::applyMenuTouchGesture(const TouchEvent &event, uint32_t nowMs) {
     return;
   }
 
-  // Swipe right = go back one level (submenu -> Main, Main -> resume reading),
-  // the same action as the hardware back button. Saves scrolling up to "Back".
+  // Swipe right = go back one level, the same action as the hardware back
+  // button: pop one sub-menu page (mirrors the "Back" row), and only resume
+  // reading from Main. Saves scrolling up to "Back".
   if (deltaX > 0 && absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
       absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx)) {
     lastMenuTapValid_ = false;
-    toggleMenuFromPowerButton(nowMs);
+    menuBackOneLevel(nowMs);
     return;
   }
 
@@ -3806,6 +3854,8 @@ void App::rebuildSettingsMenuItems() {
     char buf[8];
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Sync via Wi-Fi");
+    settingsMenuItems_.push_back(String("Auto clock: ") +
+                                 (clock_.autoSyncEnabled() ? "On" : "Off"));
     settingsMenuItems_.push_back("Timezone: " + clock_.timezoneLabel());
     const BoardConfig::RtcDateTime &clockEdit = clock_.clockEdit();
     std::snprintf(buf, sizeof(buf), "%04u", clockEdit.year);
@@ -3908,6 +3958,15 @@ void App::maybeAutoCheckForUpdates(uint32_t nowMs) {
 
   Serial.println("[ota] auto-check enabled");
   ota_.startBackgroundCheck(otaConfig);
+}
+
+void App::maybeAutoSyncClock(uint32_t nowMs) {
+  if (!clock_.shouldAutoSync()) {
+    return;
+  }
+  if (clock_.startBackgroundSync(nowMs)) {
+    Serial.println("[clock] auto-sync enabled");
+  }
 }
 
 bool App::updateConfirmCanOpen() const {
@@ -5367,6 +5426,9 @@ void App::selectClockSettingsItem(uint32_t nowMs) {
       renderSettings();
       return;
     }
+    case kSettingsClockAutoIndex:
+      clock_.setAutoSyncEnabled(!clock_.autoSyncEnabled());
+      break;
     case kSettingsClockTimezoneIndex:
       clock_.cycleTimezone();
       break;
