@@ -24,6 +24,18 @@ final class NanoViewModel: ObservableObject {
     @Published var hasAttemptedConnection = false
     @Published var lastConnectionError: String?
 
+    private enum QueuedAction: CaseIterable {
+        case connect
+        case refreshBooks
+        case refreshSettings
+        case refreshWifi
+        case refreshRss
+    }
+
+    private var queuedActions: [QueuedAction: () async -> Void] = [:]
+    private var actionQueueTask: Task<Void, Never>?
+    private let actionDebounceNanoseconds: UInt64 = 350_000_000
+
     var canUpload: Bool {
         info != nil && !isBusy
     }
@@ -58,13 +70,15 @@ final class NanoViewModel: ObservableObject {
     }
 
     func connect(showBusy: Bool = true) {
-        Task {
+        enqueueAction(.connect) { [weak self] in
+            guard let self else { return }
             _ = await connectOnce(showBusy: showBusy)
         }
     }
 
     func refreshBooks() {
-        Task {
+        enqueueAction(.refreshBooks) { [weak self] in
+            guard let self else { return }
             await run("Refreshing") { [self] in
                 let client = NanoClient(baseURLString: self.address)
                 do {
@@ -88,7 +102,8 @@ final class NanoViewModel: ObservableObject {
     }
 
     func refreshSettings() {
-        Task {
+        enqueueAction(.refreshSettings) { [weak self] in
+            guard let self else { return }
             await run("Reading settings") { [self] in
                 let client = NanoClient(baseURLString: self.address)
                 self.deviceSettings = try await client.fetchSettings()
@@ -112,7 +127,8 @@ final class NanoViewModel: ObservableObject {
     }
 
     func refreshWifiSettings() {
-        Task {
+        enqueueAction(.refreshWifi) { [weak self] in
+            guard let self else { return }
             await run("Reading Wi-Fi settings") { [self] in
                 self.applyWifiSettings(try await NanoClient(baseURLString: self.address).fetchWifiSettings())
                 self.status = "Wi-Fi settings refreshed."
@@ -147,7 +163,8 @@ final class NanoViewModel: ObservableObject {
     }
 
     func refreshRssFeeds() {
-        Task {
+        enqueueAction(.refreshRss) { [weak self] in
+            guard let self else { return }
             await run("Reading RSS feeds") { [self] in
                 self.mergeRssFeedsFromDevice(try await NanoClient(baseURLString: self.address).fetchRssFeeds().feeds)
                 self.status = "RSS feeds loaded from the SD card."
@@ -326,6 +343,28 @@ final class NanoViewModel: ObservableObject {
             refreshPendingUploads()
         } catch {
             lastConnectionError = error.localizedDescription
+        }
+    }
+
+    private func enqueueAction(_ action: QueuedAction, operation: @escaping () async -> Void) {
+        queuedActions[action] = operation
+        actionQueueTask?.cancel()
+        let delay = actionDebounceNanoseconds
+        actionQueueTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !Task.isCancelled else { return }
+            await self?.flushQueuedActions()
+        }
+    }
+
+    private func flushQueuedActions() async {
+        let actions = queuedActions
+        queuedActions.removeAll()
+        actionQueueTask = nil
+
+        for action in QueuedAction.allCases {
+            guard let operation = actions[action] else { continue }
+            await operation()
         }
     }
 
@@ -844,6 +883,13 @@ struct ContentView: View {
                 Section("Reader") {
                     LabeledContent("Name", value: info.name)
                     LabeledContent("Wi-Fi", value: info.networkSsid ?? "Connected")
+                    if let battery = info.battery {
+                        LabeledContent {
+                            Text(battery.displayLabel)
+                        } label: {
+                            Label("Battery", systemImage: battery.systemImage)
+                        }
+                    }
                     LabeledContent("Library", value: viewModel.librarySummary)
                 }
             }

@@ -7,6 +7,40 @@ struct NanoInfo: Decodable {
     let networkSsid: String?
     let pairingCode: String
     let uploadPath: String
+    let battery: NanoBatteryStatus?
+}
+
+struct NanoBatteryStatus: Decodable {
+    let present: Bool
+    let percent: Int
+    let voltage: Double
+    let charging: Bool
+
+    var displayLabel: String {
+        guard present else {
+            return charging ? "USB power" : "Not detected"
+        }
+        let clampedPercent = max(0, min(100, percent))
+        let voltageLabel = String(format: "%.2f V", voltage)
+        return charging ? "\(clampedPercent)% charging · \(voltageLabel)" : "\(clampedPercent)% · \(voltageLabel)"
+    }
+
+    var systemImage: String {
+        if charging {
+            return "battery.100.bolt"
+        }
+        guard present else {
+            return "battery.0"
+        }
+        switch percent {
+        case 75...:
+            return "battery.100"
+        case 35..<75:
+            return "battery.50"
+        default:
+            return "battery.25"
+        }
+    }
 }
 
 struct NanoBooksResponse: Decodable {

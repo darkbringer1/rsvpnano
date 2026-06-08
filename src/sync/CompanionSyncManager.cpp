@@ -1,5 +1,7 @@
 #include "sync/CompanionSyncManager.h"
 
+#include "board/BoardConfig.h"
+
 #include <ESPmDNS.h>
 #include <SD_MMC.h>
 #include <WiFi.h>
@@ -708,12 +710,19 @@ void CompanionSyncManager::stopServer() {
 
 void CompanionSyncManager::handleInfo() {
   const String mode = networkMode_ == NetworkMode::Station ? "station" : "access_point";
+  BoardConfig::BatteryStatus battery;
+  const bool haveBattery = BoardConfig::readBatteryStatus(battery);
   const String body = String("{") + "\"name\":\"RSVP Nano\"," +
                       "\"mode\":\"" + mode + "\"," +
                       "\"baseUrl\":\"" + jsonEscape(baseUrl()) + "\"," +
                       "\"networkSsid\":\"" + jsonEscape(networkSsid_) + "\"," +
                       "\"pairingCode\":\"" + pairingCode_ + "\"," +
-                      "\"uploadPath\":\"/api/books\"" + "}";
+                      "\"uploadPath\":\"/api/books\"," +
+                      "\"battery\":{\"present\":" + String(haveBattery ? "true" : "false") +
+                      ",\"percent\":" + String(static_cast<unsigned int>(battery.percent)) +
+                      ",\"voltage\":" + String(battery.voltage, 2) +
+                      ",\"charging\":" + String(battery.charging ? "true" : "false") + "}" +
+                      "}";
   server_.send(200, "application/json", body);
 }
 
