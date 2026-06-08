@@ -30,6 +30,13 @@ constexpr uint8_t kImuWhoAmIValue = 0x05;
 
 bool MotionSensor::begin() { return initImu(); }
 
+void MotionSensor::end() {
+  if (available_) {
+    updateRegister(kImuCtrl7Reg, 0x01, 0x00);
+  }
+  available_ = false;
+}
+
 bool MotionSensor::initImu() {
   if (available_) {
     return true;
@@ -132,7 +139,7 @@ bool MotionSensor::updateRegister(uint8_t reg, uint8_t mask, uint8_t value) {
 }
 
 bool MotionSensor::readAccel(float &x, float &y, float &z) {
-  if (!available_) {
+  if (!available_ && !begin()) {
     return false;
   }
   uint8_t buffer[6] = {0};

@@ -100,7 +100,7 @@ class FocusTimer {
   Preset preset() const { return preset_; }
   bool isRunning() const;
   bool isPaused() const;
-  bool imuAvailable() const { return motion_ != nullptr && motion_->available(); }
+  bool imuAvailable() const { return motion_ != nullptr; }
   uint8_t currentRound() const { return currentRound_; }
   uint8_t totalRounds() const { return cfg_.rounds; }
   const Config &config() const { return cfg_; }

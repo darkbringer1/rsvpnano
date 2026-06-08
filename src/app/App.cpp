@@ -778,7 +778,6 @@ void App::begin() {
   }
 
   touchInitialized_ = touch_.begin();
-  motion_.begin();
   focusTimer_.begin(&motion_);
   loadFocusTimerPreferences();
 
@@ -4931,6 +4930,7 @@ void App::enterAmoledDeepSleepStandby(uint32_t nowMs, bool showGoodbye) {
   if (touchInitialized_) {
     touch_.cancel();
   }
+  motion_.end();
   display_.prepareForSleep();
   screensaver_.clearScreenOff();
   activeBookStore_.close();
@@ -5044,6 +5044,7 @@ void App::enterPowerOff(uint32_t nowMs) {
 
   activeBookStore_.close();
   storage_.end();
+  motion_.end();
   touch_.end();
   touchInitialized_ = false;
   Serial.flush();
@@ -5067,6 +5068,7 @@ void App::enterSleep(uint32_t nowMs) {
   display_.prepareForSleep();
   activeBookStore_.close();
   storage_.end();
+  motion_.end();
   touch_.end();
   touchInitialized_ = false;
 
@@ -6166,7 +6168,7 @@ void App::cycleOrientationLock(uint32_t nowMs) {
 }
 
 void App::updateAutoOrientation(uint32_t nowMs) {
-  if (orientationLockEnabled_ || !motion_.available()) {
+  if (orientationLockEnabled_) {
     return;
   }
   // Only evaluate in interactive, drawable states. Freeze while RSVP words are

@@ -13,6 +13,7 @@
 class MotionSensor {
  public:
   bool begin();
+  void end();
   bool available() const { return available_; }
 
   // Returns acceleration in g for each axis. False if the read failed or the
