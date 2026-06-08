@@ -76,6 +76,7 @@ class App {
     SettingsDisplay,
     SettingsPacing,
     SettingsBattery,
+    SettingsSound,
     SettingsClock,
     WifiSettings,
     WifiNetworks,
@@ -111,6 +112,7 @@ class App {
     SharpBell,
     HardHorn,
     Melody,
+    Startup,
   };
 
   enum class PauseMode : uint8_t {
@@ -203,6 +205,10 @@ class App {
   void selectSettingsItem(uint32_t nowMs);
   void openBatterySettings();
   void selectBatterySettingsItem(uint32_t nowMs);
+  void openSoundSettings();
+  void selectSoundSettingsItem(uint32_t nowMs);
+  String soundVolumeLabel() const;
+  void cycleSoundVolume(uint32_t nowMs);
   static String cpuMhzLabel(uint32_t mhz);
   String autoDimDelayLabel() const;
   String autoDimBrightnessLabel() const;
@@ -506,6 +512,7 @@ class App {
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
   FocusTimerChime focusTimerChime_ = FocusTimerChime::SoftBell;
+  uint8_t soundVolumePercent_ = 80;
   bool orientationLockEnabled_ = false;  // false = app-wide 180 auto-rotate active
   bool autoFlip180_ = false;             // current IMU-driven 180 flip state
   bool autoFlipCandidate_ = false;

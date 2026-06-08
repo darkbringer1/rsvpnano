@@ -169,12 +169,13 @@ constexpr size_t kSettingsBackIndex = 0;
 constexpr size_t kSettingsHomePacingIndex = 1;
 constexpr size_t kSettingsHomeDisplayIndex = 2;
 constexpr size_t kSettingsHomeTypographyIndex = 3;
-constexpr size_t kSettingsHomeWifiIndex = 4;
-constexpr size_t kSettingsHomeBatteryIndex = 5;
-constexpr size_t kSettingsHomeClockIndex = 6;
-constexpr size_t kSettingsHomeUpdateIndex = 7;
-constexpr size_t kSettingsHomeBootloaderIndex = 8;
-constexpr size_t kSettingsHomeFirmwareVersionIndex = 9;
+constexpr size_t kSettingsHomeSoundIndex = 4;
+constexpr size_t kSettingsHomeWifiIndex = 5;
+constexpr size_t kSettingsHomeBatteryIndex = 6;
+constexpr size_t kSettingsHomeClockIndex = 7;
+constexpr size_t kSettingsHomeUpdateIndex = 8;
+constexpr size_t kSettingsHomeBootloaderIndex = 9;
+constexpr size_t kSettingsHomeFirmwareVersionIndex = 10;
 // Settings > Clock page rows.
 constexpr size_t kSettingsClockSyncIndex = 1;
 constexpr size_t kSettingsClockAutoIndex = 2;
@@ -204,6 +205,8 @@ constexpr size_t kSettingsPacingLongWordsIndex = 4;
 constexpr size_t kSettingsPacingComplexityIndex = 5;
 constexpr size_t kSettingsPacingPunctuationIndex = 6;
 constexpr size_t kSettingsPacingResetIndex = 7;
+constexpr size_t kSettingsSoundVolumeIndex = 1;
+constexpr size_t kSettingsSoundTimerChimeIndex = 2;
 constexpr size_t kWifiSettingsNetworkIndex = 1;
 constexpr size_t kWifiSettingsChooseIndex = 2;
 constexpr size_t kWifiSettingsAutoUpdateIndex = 3;
@@ -294,6 +297,7 @@ constexpr const char *kPrefTimerPresetConfig[FocusTimer::kPresetCount] = {
 };
 constexpr const char *kPrefTimerChime = "tmr_chime";      // legacy bool
 constexpr const char *kPrefTimerChimeStyle = "tmr_chm";   // FocusTimerChime
+constexpr const char *kPrefSoundVolume = "snd_vol";       // 0-100 percent
 constexpr const char *kPrefOrientLock = "orient_lock";  // bool, default off (auto-rotate on)
 constexpr const char *kPrefScrollFontSize = "psc_font";
 constexpr const char *kPrefScrollLetterSpacing = "psc_lspc";
@@ -537,6 +541,7 @@ App::App()
                  menuScreen_ == MenuScreen::SettingsDisplay ||
                  menuScreen_ == MenuScreen::SettingsPacing ||
                  menuScreen_ == MenuScreen::SettingsBattery ||
+                 menuScreen_ == MenuScreen::SettingsSound ||
                  menuScreen_ == MenuScreen::SettingsClock ||
                  menuScreen_ == MenuScreen::WifiSettings)) {
               rebuildSettingsMenuItems();
@@ -603,7 +608,7 @@ void App::begin() {
   {
     const uint8_t storedChime =
         preferences_.getUChar(kPrefTimerChimeStyle, static_cast<uint8_t>(focusTimerChime_));
-    if (storedChime <= static_cast<uint8_t>(FocusTimerChime::Melody)) {
+    if (storedChime <= static_cast<uint8_t>(FocusTimerChime::Startup)) {
       focusTimerChime_ = static_cast<FocusTimerChime>(storedChime);
     }
     if (!preferences_.isKey(kPrefTimerChimeStyle) && preferences_.isKey(kPrefTimerChime) &&
@@ -611,6 +616,10 @@ void App::begin() {
       focusTimerChime_ = FocusTimerChime::Off;
     }
   }
+  soundVolumePercent_ =
+      static_cast<uint8_t>(clampIntSetting(preferences_.getUChar(kPrefSoundVolume, soundVolumePercent_),
+                                           0, 100));
+  audio_.setVolumePercent(soundVolumePercent_);
   orientationLockEnabled_ = preferences_.getBool(kPrefOrientLock, orientationLockEnabled_);
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
@@ -1554,6 +1563,7 @@ void App::menuBackOneLevel(uint32_t nowMs) {
     case MenuScreen::SettingsDisplay:
     case MenuScreen::SettingsPacing:
     case MenuScreen::SettingsBattery:
+    case MenuScreen::SettingsSound:
     case MenuScreen::SettingsClock:
     case MenuScreen::WifiSettings:
       settingsSelectedIndex_ = kSettingsBackIndex;
@@ -1604,7 +1614,8 @@ void App::applyDisplayPreferences(uint32_t nowMs, bool rerender) {
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
         menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
+        menuScreen_ == MenuScreen::SettingsSound ||
+        menuScreen_ == MenuScreen::SettingsClock ||
         menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
@@ -1635,7 +1646,8 @@ void App::applyHandednessSettings(uint32_t nowMs, bool rerender) {
   if (state_ == AppState::Menu &&
       (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
        menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
+       menuScreen_ == MenuScreen::SettingsSound ||
+       menuScreen_ == MenuScreen::SettingsClock ||
        menuScreen_ == MenuScreen::WifiSettings)) {
     rebuildSettingsMenuItems();
   }
@@ -1810,7 +1822,8 @@ void App::cycleUiLanguage(uint32_t nowMs) {
   if (state_ == AppState::Menu) {
     if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
         menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
-      menuScreen_ == MenuScreen::SettingsClock ||
+        menuScreen_ == MenuScreen::SettingsSound ||
+        menuScreen_ == MenuScreen::SettingsClock ||
         menuScreen_ == MenuScreen::WifiSettings) {
       rebuildSettingsMenuItems();
       renderSettings();
@@ -2940,9 +2953,6 @@ void App::rebuildFocusTimerPresetMenuItems() {
                                          String(c.workMin) + "/" + String(c.breakMin) + "  x" +
                                          String(c.rounds));
   }
-  // Trailing settings row: cycle and preview the timer runout chime.
-  focusTimerPresetMenuItems_.push_back("Chime: " + focusTimerChimeLabel());
-
   if (focusTimerPresetSelectedIndex_ >= focusTimerPresetMenuItems_.size()) {
     focusTimerPresetSelectedIndex_ = focusTimerPresetMenuItems_.size() > 1
                                          ? kFocusTimerPresetFirstIndex
@@ -2959,13 +2969,6 @@ void App::selectFocusTimerPreset(uint32_t nowMs) {
     resetFocusTimer();
     menuScreen_ = MenuScreen::Main;
     renderMainMenu();
-    return;
-  }
-
-  // Trailing row cycles and previews the completion chime.
-  const size_t chimeIndex = kFocusTimerPresetFirstIndex + FocusTimer::kPresetCount;
-  if (focusTimerPresetSelectedIndex_ == chimeIndex) {
-    cycleFocusTimerChime(nowMs);
     return;
   }
 
@@ -3020,6 +3023,7 @@ void App::moveMenuSelection(int direction) {
   size_t itemCount = MenuItemCount;
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsSound ||
       menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     selectedIndex = &settingsSelectedIndex_;
@@ -3072,6 +3076,7 @@ void App::moveMenuSelection(int direction) {
   renderMenu();
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsSound ||
       menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     Serial.printf("[settings] selected=%s\n", settingsMenuItems_[settingsSelectedIndex_].c_str());
@@ -3161,6 +3166,7 @@ void App::moveMenuSelection(int direction) {
 void App::selectMenuItem(uint32_t nowMs) {
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsSound ||
       menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     selectSettingsItem(nowMs);
@@ -3288,6 +3294,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
       case kSettingsHomeTypographyIndex:
         openTypographyTuning();
         return;
+      case kSettingsHomeSoundIndex:
+        openSoundSettings();
+        return;
       case kSettingsHomePacingIndex:
         settingsSelectedIndex_ = kSettingsPacingReadingModeIndex;
         menuScreen_ = MenuScreen::SettingsPacing;
@@ -3327,6 +3336,11 @@ void App::selectSettingsItem(uint32_t nowMs) {
 
   if (menuScreen_ == MenuScreen::SettingsBattery) {
     selectBatterySettingsItem(nowMs);
+    return;
+  }
+
+  if (menuScreen_ == MenuScreen::SettingsSound) {
+    selectSoundSettingsItem(nowMs);
     return;
   }
 
@@ -3617,6 +3631,53 @@ void App::selectBatterySettingsItem(uint32_t nowMs) {
   renderSettings();
 }
 
+void App::openSoundSettings() {
+  settingsSelectedIndex_ = kSettingsSoundVolumeIndex;
+  menuScreen_ = MenuScreen::SettingsSound;
+  rebuildSettingsMenuItems();
+  renderSettings();
+}
+
+void App::selectSoundSettingsItem(uint32_t nowMs) {
+  switch (settingsSelectedIndex_) {
+    case kSettingsBackIndex:
+      settingsSelectedIndex_ = kSettingsHomeSoundIndex;
+      menuScreen_ = MenuScreen::SettingsHome;
+      rebuildSettingsMenuItems();
+      renderSettings();
+      return;
+    case kSettingsSoundVolumeIndex:
+      cycleSoundVolume(nowMs);
+      return;
+    case kSettingsSoundTimerChimeIndex:
+      cycleFocusTimerChime(nowMs);
+      return;
+    default:
+      return;
+  }
+}
+
+String App::soundVolumeLabel() const {
+  if (soundVolumePercent_ == 0) {
+    return "Muted";
+  }
+  return String(soundVolumePercent_) + "%";
+}
+
+void App::cycleSoundVolume(uint32_t nowMs) {
+  soundVolumePercent_ = static_cast<uint8_t>(
+      nextCyclicSetting(soundVolumePercent_, 0, 100, 10));
+  preferences_.putUChar(kPrefSoundVolume, soundVolumePercent_);
+  audio_.setVolumePercent(soundVolumePercent_);
+  Serial.printf("[sound] volume=%u%%\n", static_cast<unsigned int>(soundVolumePercent_));
+  rebuildSettingsMenuItems();
+  renderSettings();
+  if (soundVolumePercent_ > 0 && focusTimerChime_ != FocusTimerChime::Off) {
+    playFocusTimerCue(FocusTimer::Cue::WorkComplete);
+  }
+  lastFocusTimerActionMs_ = nowMs;
+}
+
 void App::openWifiSettings() {
   settingsSelectedIndex_ = configuredWifiSsid().isEmpty() ? kWifiSettingsChooseIndex
                                                           : kWifiSettingsAutoUpdateIndex;
@@ -3900,6 +3961,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::WordPacing));
     settingsMenuItems_.push_back(uiText(UiText::Display));
     settingsMenuItems_.push_back(uiText(UiText::TypographyTune));
+    settingsMenuItems_.push_back("Sound");
     settingsMenuItems_.push_back("Wi-Fi");
     settingsMenuItems_.push_back("Battery");
     settingsMenuItems_.push_back("Clock");
@@ -3936,6 +3998,10 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back(uiText(UiText::Punctuation) + ": " +
                                  pacingDelayLabel(pacingPunctuationDelayMs_));
     settingsMenuItems_.push_back(uiText(UiText::ResetPacing));
+  } else if (menuScreen_ == MenuScreen::SettingsSound) {
+    settingsMenuItems_.push_back(uiText(UiText::Back));
+    settingsMenuItems_.push_back("Volume: " + soundVolumeLabel());
+    settingsMenuItems_.push_back("Timer chime: " + focusTimerChimeLabel());
   } else if (menuScreen_ == MenuScreen::WifiSettings) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
     settingsMenuItems_.push_back("Network: " + storedOrFallbackLabel(configuredWifiSsid(), "Not set"));
@@ -5281,6 +5347,7 @@ void App::renderMenu() {
 
   if (menuScreen_ == MenuScreen::SettingsHome || menuScreen_ == MenuScreen::SettingsDisplay ||
       menuScreen_ == MenuScreen::SettingsPacing || menuScreen_ == MenuScreen::SettingsBattery ||
+      menuScreen_ == MenuScreen::SettingsSound ||
       menuScreen_ == MenuScreen::SettingsClock ||
       menuScreen_ == MenuScreen::WifiSettings) {
     renderSettings();
@@ -6228,6 +6295,8 @@ String App::focusTimerChimeLabel() const {
       return "Hard horn";
     case FocusTimerChime::Melody:
       return "Little tune";
+    case FocusTimerChime::Startup:
+      return "8-bit startup";
     default:
       return "Soft bell";
   }
@@ -6235,15 +6304,20 @@ String App::focusTimerChimeLabel() const {
 
 void App::cycleFocusTimerChime(uint32_t nowMs) {
   uint8_t next = static_cast<uint8_t>(focusTimerChime_) + 1U;
-  if (next > static_cast<uint8_t>(FocusTimerChime::Melody)) {
+  if (next > static_cast<uint8_t>(FocusTimerChime::Startup)) {
     next = static_cast<uint8_t>(FocusTimerChime::Off);
   }
   focusTimerChime_ = static_cast<FocusTimerChime>(next);
   preferences_.putUChar(kPrefTimerChimeStyle, next);
   preferences_.putBool(kPrefTimerChime, focusTimerChime_ != FocusTimerChime::Off);
   Serial.printf("[timer] chime=%s\n", focusTimerChimeLabel().c_str());
-  rebuildFocusTimerPresetMenuItems();
-  renderFocusTimerPresets();
+  if (menuScreen_ == MenuScreen::FocusTimerPresets) {
+    rebuildFocusTimerPresetMenuItems();
+    renderFocusTimerPresets();
+  } else if (menuScreen_ == MenuScreen::SettingsSound) {
+    rebuildSettingsMenuItems();
+    renderSettings();
+  }
   if (focusTimerChime_ != FocusTimerChime::Off) {
     playFocusTimerCue(FocusTimer::Cue::WorkComplete);
   }
@@ -6303,6 +6377,12 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
           played = audio_.tone(523, 80, kSoft) && (delay(35), audio_.tone(659, 80, kSoft)) &&
                    (delay(35), audio_.tone(784, 90, kSoft)) &&
                    (delay(40), audio_.tone(resolve < 0 ? 587 : 1047, 130, kSoft));
+          break;
+        case FocusTimerChime::Startup:
+          played = audio_.tone(resolve < 0 ? 392 : 659, 55, kSharp) &&
+                   (delay(22), audio_.tone(resolve < 0 ? 330 : 784, 55, kSharp)) &&
+                   (delay(22), audio_.tone(resolve < 0 ? 294 : 988, 65, kSharp)) &&
+                   (delay(35), audio_.tone(resolve < 0 ? 262 : 1319, 105, kSharp));
           break;
         case FocusTimerChime::Off:
         default:

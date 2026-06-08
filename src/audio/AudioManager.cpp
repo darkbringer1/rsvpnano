@@ -106,6 +106,15 @@ bool AudioManager::tone(uint32_t frequencyHz, uint32_t durationMs, int16_t ampli
 
 bool AudioManager::available() const { return available_; }
 
+void AudioManager::setVolumePercent(uint8_t percent) {
+  volumePercent_ = std::min<uint8_t>(percent, 100);
+  if (available_) {
+    writeCodecRegister(kEs8311DacReg32, codecVolumeRegister());
+  }
+}
+
+uint8_t AudioManager::volumePercent() const { return volumePercent_; }
+
 bool AudioManager::enableAudioRail() {
 #if defined(BOARD_AMOLED_18)
   pinMode(BoardConfig::PIN_AUDIO_PA, OUTPUT);
@@ -282,7 +291,13 @@ bool AudioManager::startCodec() {
 
   dacMute &= 0x9F;
   return writeCodecRegister(kEs8311DacReg31, dacMute) &&
-         writeCodecRegister(kEs8311DacReg32, kEs8311DacVolumeMax);
+         writeCodecRegister(kEs8311DacReg32, codecVolumeRegister());
+}
+
+uint8_t AudioManager::codecVolumeRegister() const {
+  const uint16_t scaled =
+      (static_cast<uint16_t>(kEs8311DacVolumeMax) * volumePercent_) / 100U;
+  return static_cast<uint8_t>(scaled);
 }
 
 bool AudioManager::prepareForBeep() {
@@ -299,7 +314,7 @@ bool AudioManager::prepareForBeep() {
     dacMute &= 0x9F;
     writeCodecRegister(kEs8311DacReg31, dacMute);
   }
-  writeCodecRegister(kEs8311DacReg32, kEs8311DacVolumeMax);
+  writeCodecRegister(kEs8311DacReg32, codecVolumeRegister());
   return true;
 }
 

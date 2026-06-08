@@ -10,6 +10,8 @@ class AudioManager {
   bool tone(uint32_t frequencyHz, uint32_t durationMs);
   bool tone(uint32_t frequencyHz, uint32_t durationMs, int16_t amplitude);
   bool available() const;
+  void setVolumePercent(uint8_t percent);
+  uint8_t volumePercent() const;
 
  private:
   static constexpr uint32_t kSampleRateHz = 16000;
@@ -28,6 +30,7 @@ class AudioManager {
   bool configureCodec();
   bool configureCodecSampleFormat();
   bool startCodec();
+  uint8_t codecVolumeRegister() const;
   bool prepareForBeep();
   bool recoverOutputPath();
   bool writeToneBuffer(size_t frames);
@@ -39,5 +42,6 @@ class AudioManager {
 
   bool available_ = false;
   bool i2sInitialized_ = false;
+  uint8_t volumePercent_ = 100;
   int16_t toneBuffer_[kMaxToneSamples] = {};
 };
