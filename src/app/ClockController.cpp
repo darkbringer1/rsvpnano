@@ -12,6 +12,15 @@
 namespace {
 
 constexpr const char *kPrefTimezoneOffset = "tz_off";
+constexpr const char *kPrefClockAuto = "clk_auto";       // bool: auto Wi-Fi clock sync
+constexpr const char *kPrefClockLastSync = "clk_last";   // uint32: last NTP sync, UTC epoch seconds
+
+// How stale the clock may get before an auto sync re-runs at boot. RTC drift is
+// tiny, so weekly is plenty and keeps Wi-Fi/battery use rare.
+constexpr uint32_t kClockSyncIntervalSec = 7UL * 24UL * 3600UL;
+
+// Worker-task stack. NTP + a small HTTP geo-IP GET + TLS-free HTTPClient.
+constexpr uint32_t kSyncTaskStackBytes = 8192;
 
 // Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm). Used to
 // convert between UTC and local time.
@@ -124,7 +133,7 @@ void ClockController::writeLocalToRtc(const BoardConfig::RtcDateTime &local) {
   BoardConfig::rtcWrite(utc);
 }
 
-bool ClockController::fetchTimezoneOffsetMinutes(int &outMinutes) {
+bool ClockController::fetchTimezoneOffsetMinutes(int &outMinutes) {  // static
   // ip-api.com returns the UTC offset (seconds, includes DST) for the device's
   // public IP. Free, HTTP, no key. Hand-parse the "offset" integer.
   HTTPClient http;
@@ -266,7 +275,203 @@ bool ClockController::syncFromNetwork(uint32_t nowMs) {
                   rtc.hour, rtc.minute);
   }
   Serial.printf("[clock] RTC set (UTC) from NTP; local %s %s\n", buf, timezoneLabel().c_str());
+  persistSyncEpoch();
   display_.renderStatus("Clock set", buf, timezoneLabel());
   delay(1500);
   return true;
+}
+
+void ClockController::persistSyncEpoch() {
+  // Record when the clock was last NTP-synced so periodic auto-sync can tell how
+  // stale it is. Reads the RTC (UTC) directly rather than trusting a cached value.
+  BoardConfig::RtcDateTime utc;
+  if (!BoardConfig::rtcRead(utc) || !utc.valid) {
+    return;
+  }
+  const int64_t epoch =
+      static_cast<int64_t>(civilDayNumber(utc.year, utc.month, utc.day)) * 86400 +
+      utc.hour * 3600 + utc.minute * 60 + utc.second;
+  if (epoch > 0) {
+    preferences_.putUInt(kPrefClockLastSync, static_cast<uint32_t>(epoch));
+  }
+}
+
+bool ClockController::autoSyncEnabled() const {
+  return preferences_.getBool(kPrefClockAuto, false);
+}
+
+void ClockController::setAutoSyncEnabled(bool enabled) {
+  preferences_.putBool(kPrefClockAuto, enabled);
+}
+
+bool ClockController::shouldAutoSync() const {
+  if (!autoSyncEnabled() || syncInProgress_) {
+    return false;
+  }
+  String ssid;
+  String password;
+  if (!wifiConfig_ || !wifiConfig_(ssid, password) || ssid.isEmpty()) {
+    return false;  // no network configured
+  }
+
+  BoardConfig::RtcDateTime utc;
+  if (!BoardConfig::rtcRead(utc) || !utc.valid) {
+    return true;  // clock lost (power loss / never set)
+  }
+  const uint32_t last = preferences_.getUInt(kPrefClockLastSync, 0);
+  if (last == 0) {
+    return true;  // never auto-synced
+  }
+  const int64_t now = static_cast<int64_t>(civilDayNumber(utc.year, utc.month, utc.day)) * 86400 +
+                      utc.hour * 3600 + utc.minute * 60 + utc.second;
+  if (now < static_cast<int64_t>(last)) {
+    return true;  // RTC moved backwards -> resync
+  }
+  return (now - static_cast<int64_t>(last)) >= static_cast<int64_t>(kClockSyncIntervalSec);
+}
+
+bool ClockController::startBackgroundSync(uint32_t nowMs) {
+  if (syncInProgress_) {
+    return false;
+  }
+  if (networkBlocked_ && networkBlocked_("Clock", nowMs)) {
+    return false;  // another feature owns the radio
+  }
+  String ssid;
+  String password;
+  if (!wifiConfig_ || !wifiConfig_(ssid, password) || ssid.isEmpty()) {
+    return false;
+  }
+
+  if (syncQueue_ == nullptr) {
+    syncQueue_ = xQueueCreate(1, sizeof(SyncResult));
+    if (syncQueue_ == nullptr) {
+      Serial.println("[clock] could not create sync queue");
+      return false;
+    }
+  }
+  xQueueReset(syncQueue_);
+
+  SyncTaskParams *params = new SyncTaskParams();
+  if (params == nullptr) {
+    return false;
+  }
+  params->ssid = ssid;
+  params->password = password;
+  params->resultQueue = syncQueue_;
+
+  syncInProgress_ = true;
+  const BaseType_t created = xTaskCreatePinnedToCore(syncTask, "clock_sync", kSyncTaskStackBytes,
+                                                     params, 1, nullptr, 0);
+  if (created != pdPASS) {
+    Serial.printf("[clock] sync task create failed: %ld\n", static_cast<long>(created));
+    syncInProgress_ = false;
+    delete params;
+    return false;
+  }
+  Serial.println("[clock] background sync started");
+  return true;
+}
+
+void ClockController::syncTask(void *params) {
+  SyncTaskParams *taskParams = static_cast<SyncTaskParams *>(params);
+  if (taskParams == nullptr) {
+    vTaskDelete(nullptr);
+    return;
+  }
+
+  SyncResult result;
+
+  WiFi.persistent(false);
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(taskParams->ssid.c_str(), taskParams->password.c_str());
+  uint32_t startMs = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - startMs < 8000) {
+    delay(100);
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    // Geo-IP timezone is best-effort; on failure keep the existing offset.
+    int detected = 0;
+    if (fetchTimezoneOffsetMinutes(detected)) {
+      result.tzDetected = true;
+      result.tzOffsetMinutes = detected;
+    }
+
+    configTime(0, 0, "pool.ntp.org", "time.nist.gov");  // RTC stores UTC
+    struct tm timeInfo;
+    bool got = false;
+    startMs = millis();
+    while (millis() - startMs < 8000) {
+      if (getLocalTime(&timeInfo, 200)) {
+        got = true;
+        break;
+      }
+      delay(100);
+    }
+    if (got && timeInfo.tm_year >= 120) {  // tm_year is years since 1900; <2020 = bad
+      result.ok = true;
+      result.year = static_cast<uint16_t>(timeInfo.tm_year + 1900);
+      result.month = static_cast<uint8_t>(timeInfo.tm_mon + 1);
+      result.day = static_cast<uint8_t>(timeInfo.tm_mday);
+      result.hour = static_cast<uint8_t>(timeInfo.tm_hour);
+      result.minute = static_cast<uint8_t>(timeInfo.tm_min);
+      result.second = static_cast<uint8_t>(timeInfo.tm_sec);
+    }
+  }
+
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+
+  if (taskParams->resultQueue != nullptr) {
+    xQueueOverwrite(taskParams->resultQueue, &result);
+  }
+  delete taskParams;
+  vTaskDelete(nullptr);
+}
+
+bool ClockController::pollSync(uint32_t nowMs) {
+  (void)nowMs;
+  if (syncQueue_ == nullptr) {
+    return false;
+  }
+  SyncResult result;
+  bool consumed = false;
+  while (xQueueReceive(syncQueue_, &result, 0) == pdTRUE) {
+    consumed = true;
+    syncInProgress_ = false;
+    if (!result.ok) {
+      Serial.println("[clock] background sync failed");
+      continue;
+    }
+
+    if (result.tzDetected) {
+      timezoneOffsetMinutes_ = result.tzOffsetMinutes;
+      preferences_.putInt(kPrefTimezoneOffset, timezoneOffsetMinutes_);
+      Serial.printf("[clock] timezone auto-detected: %s\n", timezoneLabel().c_str());
+    }
+
+    // RTC write on the main thread: it shares the I2C touch bus.
+    BoardConfig::RtcDateTime utc;
+    utc.year = result.year;
+    utc.month = result.month;
+    utc.day = result.day;
+    utc.hour = result.hour;
+    utc.minute = result.minute;
+    utc.second = result.second;
+    utc.valid = true;
+    if (!BoardConfig::rtcWrite(utc)) {
+      Serial.println("[clock] background sync RTC write failed");
+      continue;
+    }
+
+    persistSyncEpoch();
+    if (onClockSet_) {
+      onClockSet_();
+    }
+    Serial.printf("[clock] auto-synced (UTC) %04u-%02u-%02u %02u:%02u %s\n", utc.year, utc.month,
+                  utc.day, utc.hour, utc.minute, timezoneLabel().c_str());
+  }
+  return consumed;
 }

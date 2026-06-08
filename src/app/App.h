@@ -133,6 +133,7 @@ class App {
 #endif
   bool handleStandbyCombo(uint32_t nowMs);
   void toggleMenuFromPowerButton(uint32_t nowMs);
+  void menuBackOneLevel(uint32_t nowMs);  // pop one sub-menu page (mirrors the "Back" row)
   void openMainMenu(uint32_t nowMs);
   void cycleBrightness(uint32_t nowMs);
   void cycleThemeMode(uint32_t nowMs);
@@ -204,6 +205,7 @@ class App {
   void rebuildSettingsMenuItems();
   void applyPacingSettings();
   void maybeAutoCheckForUpdates(uint32_t nowMs);
+  void maybeAutoSyncClock(uint32_t nowMs);
   void maybeOpenUpdateConfirm(uint32_t nowMs);
   bool updateConfirmCanOpen() const;
   void runRssFeedCheck(uint32_t nowMs);
@@ -499,6 +501,7 @@ class App {
   bool brightnessToastVisible_ = false;
   bool autoDimActive_ = false;
   bool cachedOtaAutoCheck_ = false;
+  bool otaCheckDeferredForClock_ = false;  // OTA auto-check waiting on a boot clock sync
   uint32_t cpuMhzPlay_ = 160;
   uint32_t cpuMhzScroll_ = 160;
   uint32_t cpuMhzPaused_ = 80;
