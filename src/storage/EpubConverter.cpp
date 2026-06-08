@@ -29,7 +29,7 @@ constexpr size_t kMaxTagChars = 512;
 constexpr size_t kMaxEntityChars = 16;
 constexpr size_t kOutputWrapWidth = 96;
 constexpr size_t kBufferedTextFlushThreshold = 220;
-constexpr const char *kConverterVersion = "stream-v6";
+constexpr const char *kConverterVersion = "stream-v7";
 
 enum class ContentExtractStatus {
   Complete,
@@ -51,6 +51,12 @@ struct ManifestItem {
   String id;
   String path;
   String mediaType;
+  String properties;
+};
+
+struct TocEntry {
+  String path;
+  String title;
 };
 
 uint16_t readLe16(const uint8_t *data) {
@@ -1809,6 +1815,7 @@ std::vector<ManifestItem> parseManifestItems(const String &opfXml, const String 
     item.id = attributeValue(tag, "id");
     item.path = resolveZipPath(opfBaseDir, attributeValue(tag, "href"));
     item.mediaType = attributeValue(tag, "media-type");
+    item.properties = attributeValue(tag, "properties");
 
     if (!item.id.isEmpty() && !item.path.isEmpty()) {
       items.push_back(item);
@@ -1847,6 +1854,18 @@ std::vector<String> parseSpineIds(const String &opfXml) {
   return ids;
 }
 
+String parseSpineTocId(const String &opfXml) {
+  int position = opfXml.indexOf("<spine");
+  if (position < 0) {
+    return "";
+  }
+  const int end = opfXml.indexOf('>', position);
+  if (end < 0) {
+    return "";
+  }
+  return attributeValue(opfXml.substring(position, end + 1), "toc");
+}
+
 const ManifestItem *findManifestItem(const std::vector<ManifestItem> &items, const String &id) {
   for (size_t i = 0; i < items.size(); ++i) {
     if (items[i].id == id) {
@@ -1854,6 +1873,116 @@ const ManifestItem *findManifestItem(const std::vector<ManifestItem> &items, con
     }
   }
   return nullptr;
+}
+
+bool manifestPropertiesContain(const ManifestItem &item, const char *property) {
+  String properties = item.properties;
+  properties.trim();
+  int start = 0;
+  while (start < static_cast<int>(properties.length())) {
+    while (start < static_cast<int>(properties.length()) && isWhitespace(properties[start])) {
+      ++start;
+    }
+    int end = start;
+    while (end < static_cast<int>(properties.length()) && !isWhitespace(properties[end])) {
+      ++end;
+    }
+    if (properties.substring(start, end) == property) {
+      return true;
+    }
+    start = end + 1;
+  }
+  return false;
+}
+
+void addTocEntry(std::vector<TocEntry> &entries, const String &path, const String &title) {
+  String cleanedTitle = normalizeDisplayText(title);
+  cleanedTitle.trim();
+  if (path.isEmpty() || cleanedTitle.isEmpty()) {
+    return;
+  }
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (entries[i].path == path) {
+      return;
+    }
+  }
+  TocEntry entry;
+  entry.path = path;
+  entry.title = cleanedTitle;
+  entries.push_back(entry);
+}
+
+std::vector<TocEntry> parseNavTocEntries(const String &navXml, const String &navPath) {
+  std::vector<TocEntry> entries;
+  int position = 0;
+  while (position >= 0) {
+    position = navXml.indexOf("<a", position);
+    if (position < 0) {
+      break;
+    }
+    const int afterName = position + 2;
+    if (static_cast<size_t>(afterName) < navXml.length() &&
+        !isWhitespace(navXml[afterName]) && navXml[afterName] != '>') {
+      position = afterName;
+      continue;
+    }
+    const int openEnd = navXml.indexOf('>', position);
+    if (openEnd < 0) {
+      break;
+    }
+    const String tag = navXml.substring(position, openEnd + 1);
+    const String href = attributeValue(tag, "href");
+    const int closeStart = navXml.indexOf("</a>", openEnd + 1);
+    if (closeStart < 0) {
+      break;
+    }
+    if (!href.isEmpty()) {
+      addTocEntry(entries, resolveZipPath(directoryForPath(navPath), href),
+                  plainTextFromXmlFragment(navXml.substring(openEnd + 1, closeStart)));
+    }
+    position = closeStart + 4;
+  }
+  return entries;
+}
+
+std::vector<TocEntry> parseNcxTocEntries(const String &ncxXml, const String &ncxPath) {
+  std::vector<TocEntry> entries;
+  int position = 0;
+  while (position >= 0) {
+    position = ncxXml.indexOf("<navPoint", position);
+    if (position < 0) {
+      break;
+    }
+    const int pointEnd = ncxXml.indexOf("</navPoint>", position);
+    if (pointEnd < 0) {
+      break;
+    }
+    const String navPoint = ncxXml.substring(position, pointEnd + 11);
+    const int textStart = navPoint.indexOf("<text");
+    const int contentStart = navPoint.indexOf("<content");
+    if (textStart >= 0 && contentStart >= 0) {
+      const int textOpenEnd = navPoint.indexOf('>', textStart);
+      const int textClose = navPoint.indexOf("</text>", textOpenEnd + 1);
+      const int contentEnd = navPoint.indexOf('>', contentStart);
+      if (textOpenEnd >= 0 && textClose >= 0 && contentEnd >= 0) {
+        const String contentTag = navPoint.substring(contentStart, contentEnd + 1);
+        const String href = attributeValue(contentTag, "src");
+        addTocEntry(entries, resolveZipPath(directoryForPath(ncxPath), href),
+                    plainTextFromXmlFragment(navPoint.substring(textOpenEnd + 1, textClose)));
+      }
+    }
+    position = pointEnd + 11;
+  }
+  return entries;
+}
+
+String tocTitleForPath(const std::vector<TocEntry> &entries, const String &path) {
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (entries[i].path == path) {
+      return entries[i].title;
+    }
+  }
+  return "";
 }
 
 void reportContentProgress(const EpubConverter::Options &options, size_t itemIndex,
@@ -2555,11 +2684,37 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
   const String opfBaseDir = directoryForPath(opfPath);
   const std::vector<ManifestItem> manifest = parseManifestItems(opfXml, opfBaseDir);
   const std::vector<String> spineIds = parseSpineIds(opfXml);
+  const String spineTocId = parseSpineTocId(opfXml);
+  std::vector<TocEntry> tocEntries;
   std::vector<String> readingOrder;
   readingOrder.reserve(spineIds.size());
   Serial.printf("[epub] Package parsed: manifest=%u spine=%u base=%s\n",
                 static_cast<unsigned int>(manifest.size()),
                 static_cast<unsigned int>(spineIds.size()), opfBaseDir.c_str());
+
+  for (size_t i = 0; i < manifest.size(); ++i) {
+    const bool navDocument = manifestPropertiesContain(manifest[i], "nav");
+    const bool ncxDocument = toLowerCopy(manifest[i].mediaType) == "application/x-dtbncx+xml" ||
+                             toLowerCopy(manifest[i].path).endsWith(".ncx");
+    if (!navDocument && !ncxDocument) {
+      continue;
+    }
+    if (ncxDocument && !spineTocId.isEmpty() && manifest[i].id != spineTocId) {
+      continue;
+    }
+
+    String tocXml;
+    if (!zip.extractToString(manifest[i].path, tocXml, options.maxExtractBytes)) {
+      Serial.printf("[epub] TOC entry not readable: %s\n", manifest[i].path.c_str());
+      continue;
+    }
+    const std::vector<TocEntry> parsed =
+        navDocument ? parseNavTocEntries(tocXml, manifest[i].path)
+                    : parseNcxTocEntries(tocXml, manifest[i].path);
+    tocEntries.insert(tocEntries.end(), parsed.begin(), parsed.end());
+  }
+  Serial.printf("[epub] TOC contains %u chapter labels\n",
+                static_cast<unsigned int>(tocEntries.size()));
 
   reportProgress(options, "Opening EPUB", "Building reading order", 20);
   for (size_t i = 0; i < spineIds.size(); ++i) {
@@ -2628,8 +2783,14 @@ bool convertEpubToRsvp(const String &epubPath, const String &tempPath, const Str
     reportProgress(options, "Extracting content", startDetail.c_str(), startPercent);
 
     const ContentExtractStatus extractStatus =
-        zip.extractContentToRsvp(readingOrder[i], output, wordCount, options.maxWords,
-                                 lastChapterTitle, options, i, readingOrder.size());
+        ([&]() -> ContentExtractStatus {
+          const String tocTitle = tocTitleForPath(tocEntries, readingOrder[i]);
+          if (!tocTitle.isEmpty() && !writeChapterMarker(output, tocTitle, lastChapterTitle)) {
+            return ContentExtractStatus::Failed;
+          }
+          return zip.extractContentToRsvp(readingOrder[i], output, wordCount, options.maxWords,
+                                          lastChapterTitle, options, i, readingOrder.size());
+        })();
     const int finishPercent = 25 + static_cast<int>(((i + 1) * 70UL) / readingOrder.size());
     const String finishDetail =
         String(i + 1) + "/" + String(readingOrder.size()) + " " + String(wordCount) + " words";

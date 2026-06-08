@@ -151,34 +151,125 @@ def container_rootfile(epub: zipfile.ZipFile) -> str:
     raise ValueError("EPUB container.xml does not name an OPF package file")
 
 
-def parse_package(epub: zipfile.ZipFile, opf_path: str) -> tuple[str, str, list[str]]:
+class NavTocParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.items: list[tuple[str, str]] = []
+        self._active_href = ""
+        self._active_parts: list[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in SKIP_TAGS - {"nav"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+        if tag != "a" or self._active_href:
+            return
+        attrs_dict = dict(attrs)
+        href = attrs_dict.get("href") or ""
+        if href:
+            self._active_href = href
+            self._active_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in SKIP_TAGS - {"nav"} and self._skip_depth > 0:
+            self._skip_depth -= 1
+            return
+        if self._skip_depth > 0:
+            return
+        if tag == "a" and self._active_href:
+            title = clean_text(" ".join(self._active_parts))
+            if title:
+                self.items.append((self._active_href, title))
+            self._active_href = ""
+            self._active_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth == 0 and self._active_href:
+            self._active_parts.append(data)
+
+
+def toc_from_nav_document(epub: zipfile.ZipFile, nav_path: str) -> dict[str, str]:
+    parser = NavTocParser()
+    parser.feed(read_zip_text(epub, nav_path))
+    parser.close()
+    titles: dict[str, str] = {}
+    for href, title in parser.items:
+        path = zip_join(nav_path, href)
+        titles.setdefault(path, title)
+    return titles
+
+
+def toc_from_ncx(epub: zipfile.ZipFile, ncx_path: str) -> dict[str, str]:
+    ncx_xml = read_zip_text(epub, ncx_path)
+    root = ET.fromstring(ncx_xml)
+    titles: dict[str, str] = {}
+    for nav_point in root.iter():
+        if local_name(nav_point.tag) != "navPoint":
+            continue
+        title = ""
+        href = ""
+        for node in nav_point.iter():
+            name = local_name(node.tag)
+            if name == "text" and node.text and not title:
+                title = clean_text(node.text)
+            elif name == "content" and not href:
+                href = node.attrib.get("src", "")
+        if title and href:
+            titles.setdefault(zip_join(ncx_path, href), title)
+    return titles
+
+
+def parse_package(epub: zipfile.ZipFile, opf_path: str) -> tuple[str, str, list[str], dict[str, str]]:
     package_xml = read_zip_text(epub, opf_path)
     root = ET.fromstring(package_xml)
     title = first_child_text(root, "title")
     author = first_child_text(root, "creator")
 
-    manifest: dict[str, str] = {}
+    manifest: dict[str, tuple[str, str, str]] = {}
     for node in root.iter():
         if local_name(node.tag) == "item":
             item_id = node.attrib.get("id")
             href = node.attrib.get("href")
             if item_id and href:
-                manifest[item_id] = zip_join(opf_path, href)
+                manifest[item_id] = (
+                    zip_join(opf_path, href),
+                    node.attrib.get("media-type", ""),
+                    node.attrib.get("properties", ""),
+                )
 
     spine_paths: list[str] = []
+    toc_id = ""
     for node in root.iter():
+        if local_name(node.tag) == "spine":
+            toc_id = node.attrib.get("toc", "")
         if local_name(node.tag) != "itemref":
             continue
         idref = node.attrib.get("idref")
         if idref in manifest:
-            path = manifest[idref]
+            path = manifest[idref][0]
             if path.lower().endswith((".xhtml", ".html", ".htm")):
                 spine_paths.append(path)
 
     if not spine_paths:
         raise ValueError("EPUB spine does not contain readable XHTML/HTML documents")
 
-    return title, author, spine_paths
+    toc_titles: dict[str, str] = {}
+    for path, media_type, properties in manifest.values():
+        try:
+            if "nav" in properties.split():
+                toc_titles.update(toc_from_nav_document(epub, path))
+            elif media_type.lower() == "application/x-dtbncx+xml" or path.lower().endswith(".ncx"):
+                if not toc_id or manifest.get(toc_id, ("", "", ""))[0] == path:
+                    toc_titles.update(toc_from_ncx(epub, path))
+        except Exception:
+            continue
+
+    return title, author, spine_paths, toc_titles
 
 
 def fallback_chapter_title(path: str, index: int) -> str:
@@ -197,7 +288,7 @@ def extract_events(epub: zipfile.ZipFile, path: str) -> list[tuple[str, str]]:
 def write_rsvp(epub_path: pathlib.Path, output_path: pathlib.Path) -> None:
     with zipfile.ZipFile(epub_path) as epub:
         opf_path = container_rootfile(epub)
-        title, author, spine_paths = parse_package(epub, opf_path)
+        title, author, spine_paths, toc_titles = parse_package(epub, opf_path)
 
         lines: list[str] = [
             f"@rsvp {RSVP_VERSION}",
@@ -219,7 +310,13 @@ def write_rsvp(epub_path: pathlib.Path, output_path: pathlib.Path) -> None:
             if not any(kind == "text" for kind, _ in events):
                 continue
 
-            if not any(kind == "chapter" for kind, _ in events):
+            toc_title = toc_titles.get(spine_path, "")
+            if toc_title:
+                if events and events[0][0] == "chapter":
+                    events[0] = ("chapter", toc_title)
+                else:
+                    events.insert(0, ("chapter", toc_title))
+            elif not any(kind == "chapter" for kind, _ in events):
                 events.insert(0, ("chapter", fallback_chapter_title(spine_path, index)))
 
             for kind, value in events:
