@@ -497,6 +497,7 @@ class App {
   bool bootButtonLongPressHandled_ = false;
   bool powerButtonReleasedSinceBoot_ = false;
   bool powerButtonLongPressHandled_ = false;
+  uint32_t lastPowerButtonActionMs_ = 0;
   bool powerOffStarted_ = false;
   bool standbyComboActive_ = false;
   bool standbyComboHandled_ = false;

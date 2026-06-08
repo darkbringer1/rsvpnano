@@ -53,6 +53,7 @@ constexpr uint32_t kBrowseMinWordsPerSecondPermille = 4000;
 constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
 constexpr uint32_t kFocusTimerActionCooldownMs = 1400;
+constexpr uint32_t kPowerButtonActionCooldownMs = 1100;
 constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
@@ -1412,8 +1413,14 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
   }
 
   const BoardConfig::PowerKeyEvent event = BoardConfig::pmuPollPowerKey();
+  if (event != BoardConfig::PowerKeyEvent::None && lastPowerButtonActionMs_ != 0 &&
+      nowMs - lastPowerButtonActionMs_ < kPowerButtonActionCooldownMs) {
+    Serial.println("[power] PWRKEY event ignored during debounce window");
+    return;
+  }
   switch (event) {
     case BoardConfig::PowerKeyEvent::LongPress:
+      lastPowerButtonActionMs_ = nowMs;
       if (state_ == AppState::PowerSaving) {
         if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
           exitPowerSaving(nowMs);
@@ -1427,6 +1434,7 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
     case BoardConfig::PowerKeyEvent::ShortPress:
       // Tap toggles deep standby (screen + touch off). It is the only gesture for
       // this mode: BOOT tap/hold stay menu/brightness, PWR hold stays power-off.
+      lastPowerButtonActionMs_ = nowMs;
       if (state_ == AppState::PowerSaving) {
         if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
           exitPowerSaving(nowMs);
@@ -1480,6 +1488,11 @@ void App::handlePowerButton(uint32_t nowMs) {
   }
 
   if (powerButton_.isHeld() && nowMs - powerButton_.lastEdgeMs() >= kPowerOffHoldMs) {
+    if (lastPowerButtonActionMs_ != 0 &&
+        nowMs - lastPowerButtonActionMs_ < kPowerButtonActionCooldownMs) {
+      return;
+    }
+    lastPowerButtonActionMs_ = nowMs;
     powerButtonLongPressHandled_ = true;
     openPowerOffConfirm(nowMs);
     return;
@@ -1494,6 +1507,12 @@ void App::handlePowerButton(uint32_t nowMs) {
     return;
   }
 
+  if (lastPowerButtonActionMs_ != 0 &&
+      nowMs - lastPowerButtonActionMs_ < kPowerButtonActionCooldownMs) {
+    Serial.println("[power] PWR release ignored during debounce window");
+    return;
+  }
+  lastPowerButtonActionMs_ = nowMs;
   menuBackOneLevel(nowMs);
 }
 
