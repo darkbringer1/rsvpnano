@@ -1,5 +1,6 @@
 #include "app/App.h"
 
+#include <esp32-hal-tinyusb.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <esp_log.h>
@@ -171,7 +172,8 @@ constexpr size_t kSettingsHomeWifiIndex = 4;
 constexpr size_t kSettingsHomeBatteryIndex = 5;
 constexpr size_t kSettingsHomeClockIndex = 6;
 constexpr size_t kSettingsHomeUpdateIndex = 7;
-constexpr size_t kSettingsHomeFirmwareVersionIndex = 8;
+constexpr size_t kSettingsHomeBootloaderIndex = 8;
+constexpr size_t kSettingsHomeFirmwareVersionIndex = 9;
 // Settings > Clock page rows.
 constexpr size_t kSettingsClockSyncIndex = 1;
 constexpr size_t kSettingsClockAutoIndex = 2;
@@ -3273,6 +3275,9 @@ void App::selectSettingsItem(uint32_t nowMs) {
         ota_.runFirmwareUpdate(preferredOtaConfig(), false, nowMs);
         return;
       }
+      case kSettingsHomeBootloaderIndex:
+        restartToBootloader(nowMs);
+        return;
       case kSettingsHomeBatteryIndex:
         openBatterySettings();
         return;
@@ -3873,6 +3878,7 @@ void App::rebuildSettingsMenuItems() {
     settingsMenuItems_.push_back("Battery");
     settingsMenuItems_.push_back("Clock");
     settingsMenuItems_.push_back(firmwareUpdateMenuLabel());
+    settingsMenuItems_.push_back("Restart to bootloader");
     settingsMenuItems_.push_back("Installed: " + ota_.firmwareVersionLabel());
   } else if (menuScreen_ == MenuScreen::SettingsDisplay) {
     settingsMenuItems_.push_back(uiText(UiText::Back));
@@ -4862,6 +4868,29 @@ String App::deepStandbyDelayLabel() const {
   return "10min";
 }
 #endif  // BOARD_AMOLED_18
+
+void App::restartToBootloader(uint32_t nowMs) {
+  Serial.println("[app] restarting into USB bootloader");
+  if (state_ == AppState::Playing && nowMs >= playingStartedMs_) {
+    lifetimeReadMs_ += nowMs - playingStartedMs_;
+    lifetimeStatsDirty_ = true;
+  }
+  saveReadingPosition(true);
+  saveLifetimeStats();
+
+  display_.renderStatus("Bootloader", "Restarting", "Use USB flasher");
+  delay(700);
+
+  activeBookStore_.close();
+  storage_.end();
+  Serial.flush();
+
+#if CONFIG_TINYUSB_ENABLED
+  usb_persist_restart(RESTART_BOOTLOADER);
+#else
+  ESP.restart();
+#endif
+}
 
 void App::enterPowerOff(uint32_t nowMs) {
   if (powerOffStarted_) {

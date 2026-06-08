@@ -246,6 +246,7 @@ class App {
   void selectUpdateConfirmItem(uint32_t nowMs);
   void openPowerOffConfirm(uint32_t nowMs);
   void selectPowerOffConfirmItem(uint32_t nowMs);
+  void restartToBootloader(uint32_t nowMs);
   void enterCompanionSync(uint32_t nowMs);
   void updateCompanionSync(uint32_t nowMs);
   void exitCompanionSync(uint32_t nowMs);
