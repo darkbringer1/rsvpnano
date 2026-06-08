@@ -84,11 +84,21 @@ constexpr uint8_t TCA9554_PIN_BATTERY_ADC_ENABLE = 1;
 constexpr uint8_t TCA9554_PIN_SYS_EN = 6;
 constexpr uint8_t TCA9554_PIN_AUDIO_ENABLE = 7;
 
+#if defined(BOARD_AMOLED_18)
+constexpr int PIN_AUDIO_MCLK = 16;
+constexpr int PIN_AUDIO_BCLK = 9;
+constexpr int PIN_AUDIO_WS = 45;
+constexpr int PIN_AUDIO_DIN = 10;
+constexpr int PIN_AUDIO_DOUT = 8;
+constexpr int PIN_AUDIO_PA = 46;
+#else
 constexpr int PIN_AUDIO_MCLK = 7;
 constexpr int PIN_AUDIO_BCLK = 15;
 constexpr int PIN_AUDIO_WS = 46;
 constexpr int PIN_AUDIO_DIN = 6;
 constexpr int PIN_AUDIO_DOUT = 45;
+constexpr int PIN_AUDIO_PA = -1;
+#endif
 constexpr uint8_t ES8311_ADDRESS = 0x18;
 
 struct BatteryStatus {

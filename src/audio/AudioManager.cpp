@@ -107,6 +107,11 @@ bool AudioManager::tone(uint32_t frequencyHz, uint32_t durationMs, int16_t ampli
 bool AudioManager::available() const { return available_; }
 
 bool AudioManager::enableAudioRail() {
+#if defined(BOARD_AMOLED_18)
+  pinMode(BoardConfig::PIN_AUDIO_PA, OUTPUT);
+  digitalWrite(BoardConfig::PIN_AUDIO_PA, HIGH);
+  return true;
+#else
   uint8_t direction = 0xFF;
   uint8_t output = 0xFF;
   if (!readIoRegister(kIoConfigRegister, direction) || !readIoRegister(kIoOutputRegister, output)) {
@@ -119,6 +124,7 @@ bool AudioManager::enableAudioRail() {
 
   return writeIoRegister(kIoOutputRegister, output) &&
          writeIoRegister(kIoConfigRegister, direction);
+#endif
 }
 
 bool AudioManager::initI2s() {
@@ -358,24 +364,34 @@ bool AudioManager::writeIoRegister(uint8_t reg, uint8_t value) {
 }
 
 bool AudioManager::readCodecRegister(uint8_t reg, uint8_t &value) {
-  Wire1.beginTransmission(BoardConfig::ES8311_ADDRESS);
-  Wire1.write(reg);
-  if (Wire1.endTransmission(false) != 0) {
+#if defined(BOARD_AMOLED_18)
+  TwoWire &codecWire = Wire;
+#else
+  TwoWire &codecWire = Wire1;
+#endif
+  codecWire.beginTransmission(BoardConfig::ES8311_ADDRESS);
+  codecWire.write(reg);
+  if (codecWire.endTransmission(false) != 0) {
     return false;
   }
-  if (Wire1.requestFrom(static_cast<int>(BoardConfig::ES8311_ADDRESS), 1, 1) != 1) {
+  if (codecWire.requestFrom(static_cast<int>(BoardConfig::ES8311_ADDRESS), 1, 1) != 1) {
     return false;
   }
 
-  value = Wire1.read();
+  value = codecWire.read();
   return true;
 }
 
 bool AudioManager::writeCodecRegister(uint8_t reg, uint8_t value) {
-  Wire1.beginTransmission(BoardConfig::ES8311_ADDRESS);
-  Wire1.write(reg);
-  Wire1.write(value);
-  return Wire1.endTransmission(true) == 0;
+#if defined(BOARD_AMOLED_18)
+  TwoWire &codecWire = Wire;
+#else
+  TwoWire &codecWire = Wire1;
+#endif
+  codecWire.beginTransmission(BoardConfig::ES8311_ADDRESS);
+  codecWire.write(reg);
+  codecWire.write(value);
+  return codecWire.endTransmission(true) == 0;
 }
 
 size_t AudioManager::fillToneBuffer(uint32_t frequencyHz, uint32_t durationMs, int16_t amplitude) {
