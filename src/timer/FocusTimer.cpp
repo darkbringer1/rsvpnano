@@ -191,7 +191,7 @@ void FocusTimer::tap(uint32_t nowMs) {
       break;
     case State::WorkRunning:
     case State::BreakRunning:
-      pauseTimer(nowMs);
+      pauseTimer(nowMs, PauseSource::Touch);
       break;
     case State::WorkPaused:
     case State::BreakPaused:
@@ -326,10 +326,11 @@ void FocusTimer::startPhase(Phase phase, uint32_t nowMs, uint32_t durationMs) {
   timerRunning_ = true;
   pausedRemainingMs_ = 0;
   pausedElapsedMs_ = 0;
+  pauseSource_ = PauseSource::None;
   pendingCue_ = Cue::Start;
 }
 
-void FocusTimer::pauseTimer(uint32_t nowMs) {
+void FocusTimer::pauseTimer(uint32_t nowMs, PauseSource source) {
   if (!timerRunning_) {
     return;
   }
@@ -337,6 +338,7 @@ void FocusTimer::pauseTimer(uint32_t nowMs) {
   pausedElapsedMs_ =
       timerDurationMs_ > pausedRemainingMs_ ? timerDurationMs_ - pausedRemainingMs_ : 0;
   timerRunning_ = false;
+  pauseSource_ = source;
   pendingCue_ = Cue::Pause;
   transitionTo(phase_ == Phase::Work ? State::WorkPaused : State::BreakPaused, nowMs);
 }
@@ -351,6 +353,7 @@ void FocusTimer::resumeTimer(uint32_t nowMs) {
   timerRunning_ = true;
   pausedRemainingMs_ = 0;
   pausedElapsedMs_ = 0;
+  pauseSource_ = PauseSource::None;
   pendingCue_ = Cue::Resume;
   transitionTo(phase_ == Phase::Work ? State::WorkRunning : State::BreakRunning, nowMs);
 }
@@ -360,6 +363,7 @@ void FocusTimer::completePhase(uint32_t nowMs) {
   timerRunning_ = false;
   pausedRemainingMs_ = 0;
   pausedElapsedMs_ = 0;
+  pauseSource_ = PauseSource::None;
 
   if (finished == Phase::Work) {
     ++completedWorkBlocks_;
@@ -391,6 +395,7 @@ void FocusTimer::cancel(uint32_t nowMs) {
   timerRunning_ = false;
   pausedRemainingMs_ = 0;
   pausedElapsedMs_ = 0;
+  pauseSource_ = PauseSource::None;
   phase_ = Phase::None;
   pendingCue_ = Cue::Cancelled;
   transitionTo(State::Cancelled, nowMs);
@@ -406,6 +411,7 @@ void FocusTimer::clearSession() {
   pausedRemainingMs_ = 0;
   pausedElapsedMs_ = 0;
   timerRunning_ = false;
+  pauseSource_ = PauseSource::None;
   pendingCue_ = Cue::None;
   // preset_ / cfg_ / presets_ intentionally preserved.
 }
@@ -462,13 +468,15 @@ void FocusTimer::applyOrientation(uint32_t nowMs) {
     case State::BreakRunning:
       // Lay the device flat (face down on a desk) to pause and step away.
       if (stableOrientation_ == OrientationState::Flat) {
-        pauseTimer(nowMs);
+        pauseTimer(nowMs, PauseSource::Orientation);
       }
       break;
     case State::WorkPaused:
     case State::BreakPaused:
-      // Stand it back up on a short edge to resume.
-      if (stableOrientation_ == OrientationState::Edge && orientationStableEnough) {
+      // Only orientation-paused timers auto-resume. Manual touch pauses stay
+      // paused until the user taps resume.
+      if (pauseSource_ == PauseSource::Orientation &&
+          stableOrientation_ == OrientationState::Other && orientationStableEnough) {
         resumeTimer(nowMs);
       }
       break;
@@ -526,12 +534,14 @@ void FocusTimer::updateOrientation(uint32_t nowMs) {
     candidateSinceMs_ = nowMs;
     return;
   }
+  const bool pausedLongEdgeResume =
+      (state_ == State::WorkPaused || state_ == State::BreakPaused) &&
+      candidateOrientation_ == OrientationState::Other;
+  const bool waitWorkEdgeStart =
+      state_ == State::WaitWorkStart && candidateOrientation_ == OrientationState::Edge;
   const uint32_t stableMs =
-      ((state_ == State::WorkPaused || state_ == State::BreakPaused ||
-        state_ == State::WaitWorkStart) &&
-       candidateOrientation_ == OrientationState::Edge)
-          ? kOrientationResumeStableMs
-          : kOrientationStableMs;
+      (pausedLongEdgeResume || waitWorkEdgeStart) ? kOrientationResumeStableMs
+                                                  : kOrientationStableMs;
   if ((nowMs - candidateSinceMs_) >= stableMs) {
     stableOrientation_ = candidateOrientation_;
   }

@@ -291,7 +291,8 @@ constexpr const char *kPrefTimerPresetConfig[FocusTimer::kPresetCount] = {
     "tmr_p2",  // Quick
     "tmr_p3",  // Custom
 };
-constexpr const char *kPrefTimerChime = "tmr_chime";  // bool, default on
+constexpr const char *kPrefTimerChime = "tmr_chime";      // legacy bool
+constexpr const char *kPrefTimerChimeStyle = "tmr_chm";   // FocusTimerChime
 constexpr const char *kPrefOrientLock = "orient_lock";  // bool, default off (auto-rotate on)
 constexpr const char *kPrefScrollFontSize = "psc_font";
 constexpr const char *kPrefScrollLetterSpacing = "psc_lspc";
@@ -598,7 +599,17 @@ void App::begin() {
   if (brightnessLevelIndex_ >= kBrightnessLevelCount) {
     brightnessLevelIndex_ = kBrightnessLevelCount - 1;
   }
-  focusTimerChimeEnabled_ = preferences_.getBool(kPrefTimerChime, focusTimerChimeEnabled_);
+  {
+    const uint8_t storedChime =
+        preferences_.getUChar(kPrefTimerChimeStyle, static_cast<uint8_t>(focusTimerChime_));
+    if (storedChime <= static_cast<uint8_t>(FocusTimerChime::Melody)) {
+      focusTimerChime_ = static_cast<FocusTimerChime>(storedChime);
+    }
+    if (!preferences_.isKey(kPrefTimerChimeStyle) && preferences_.isKey(kPrefTimerChime) &&
+        !preferences_.getBool(kPrefTimerChime, true)) {
+      focusTimerChime_ = FocusTimerChime::Off;
+    }
+  }
   orientationLockEnabled_ = preferences_.getBool(kPrefOrientLock, orientationLockEnabled_);
   phantomWordsEnabled_ = preferences_.getBool(kPrefPhantomWords, phantomWordsEnabled_);
   readerBatteryVisibleWhilePlaying_ =
@@ -2910,9 +2921,8 @@ void App::rebuildFocusTimerPresetMenuItems() {
                                          String(c.workMin) + "/" + String(c.breakMin) + "  x" +
                                          String(c.rounds));
   }
-  // Trailing toggle row: completion chime on/off.
-  focusTimerPresetMenuItems_.push_back(String("Chime: ") +
-                                       (focusTimerChimeEnabled_ ? "On" : "Off"));
+  // Trailing settings row: cycle and preview the timer runout chime.
+  focusTimerPresetMenuItems_.push_back("Chime: " + focusTimerChimeLabel());
 
   if (focusTimerPresetSelectedIndex_ >= focusTimerPresetMenuItems_.size()) {
     focusTimerPresetSelectedIndex_ = focusTimerPresetMenuItems_.size() > 1
@@ -2933,13 +2943,10 @@ void App::selectFocusTimerPreset(uint32_t nowMs) {
     return;
   }
 
-  // Trailing row toggles the completion chime.
+  // Trailing row cycles and previews the completion chime.
   const size_t chimeIndex = kFocusTimerPresetFirstIndex + FocusTimer::kPresetCount;
   if (focusTimerPresetSelectedIndex_ == chimeIndex) {
-    focusTimerChimeEnabled_ = !focusTimerChimeEnabled_;
-    preferences_.putBool(kPrefTimerChime, focusTimerChimeEnabled_);
-    rebuildFocusTimerPresetMenuItems();
-    renderFocusTimerPresets();
+    cycleFocusTimerChime(nowMs);
     return;
   }
 
@@ -5698,7 +5705,7 @@ void App::renderFocusTimerSession() {
 
     case FocusTimer::State::WorkPaused:
       display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
-                                      "Tap resume - stand on side\nHold cancel", "",
+                                      "Tap resume / hold cancel\nLong edge: auto-pause only", "",
                                       focusTimer_.progressPercent(now));
       return;
 
@@ -5711,7 +5718,7 @@ void App::renderFocusTimerSession() {
 
     case FocusTimer::State::BreakPaused:
       display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
-                                      "Tap resume - stand on side\nHold cancel", "",
+                                      "Tap resume / hold cancel\nLong edge: auto-pause only", "",
                                       focusTimer_.progressPercent(now), true);
       return;
 
@@ -6188,17 +6195,54 @@ String App::formatFocusTimerRemaining(uint32_t nowMs) const {
   return String(buffer);
 }
 
+String App::focusTimerChimeLabel() const {
+  switch (focusTimerChime_) {
+    case FocusTimerChime::Off:
+      return "Off";
+    case FocusTimerChime::SoftBell:
+      return "Soft bell";
+    case FocusTimerChime::SoftDouble:
+      return "Soft double";
+    case FocusTimerChime::SharpBell:
+      return "Sharp bell";
+    case FocusTimerChime::HardHorn:
+      return "Hard horn";
+    case FocusTimerChime::Melody:
+      return "Little tune";
+    default:
+      return "Soft bell";
+  }
+}
+
+void App::cycleFocusTimerChime(uint32_t nowMs) {
+  uint8_t next = static_cast<uint8_t>(focusTimerChime_) + 1U;
+  if (next > static_cast<uint8_t>(FocusTimerChime::Melody)) {
+    next = static_cast<uint8_t>(FocusTimerChime::Off);
+  }
+  focusTimerChime_ = static_cast<FocusTimerChime>(next);
+  preferences_.putUChar(kPrefTimerChimeStyle, next);
+  preferences_.putBool(kPrefTimerChime, focusTimerChime_ != FocusTimerChime::Off);
+  Serial.printf("[timer] chime=%s\n", focusTimerChimeLabel().c_str());
+  rebuildFocusTimerPresetMenuItems();
+  renderFocusTimerPresets();
+  if (focusTimerChime_ != FocusTimerChime::Off) {
+    playFocusTimerCue(FocusTimer::Cue::WorkComplete);
+  }
+  lastFocusTimerActionMs_ = nowMs;
+}
+
 void App::playFocusTimerCue(FocusTimer::Cue cue) {
-  if (cue == FocusTimer::Cue::None || !focusTimerChimeEnabled_) {
+  if (cue == FocusTimer::Cue::None || focusTimerChime_ == FocusTimerChime::Off) {
     return;
   }
   if (!audio_.available()) {
     audio_.begin();
   }
 
-  // Soft, undistracting amplitude for completion chimes.
   constexpr int16_t kSoft = 9000;
   constexpr int16_t kTick = 7000;
+  constexpr int16_t kSharp = 12000;
+  constexpr int16_t kHard = 15000;
 
   bool played = false;
   int flashCount = 1;
@@ -6216,19 +6260,38 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
       flashCount = 1;
       break;
     case FocusTimer::Cue::WorkComplete:
-      // Single soft chime when a work block finishes.
-      played = audio_.tone(1320, 130, kSoft);
-      flashCount = 2;
-      break;
     case FocusTimer::Cue::BreakComplete:
-      played = audio_.tone(990, 130, kSoft);
-      flashCount = 2;
+    case FocusTimer::Cue::SessionComplete: {
+      const int resolve = cue == FocusTimer::Cue::BreakComplete ? -1 :
+                          cue == FocusTimer::Cue::SessionComplete ? 1 : 0;
+      switch (focusTimerChime_) {
+        case FocusTimerChime::SoftBell:
+          played = audio_.tone(resolve < 0 ? 880 : 1320, 130, kSoft);
+          break;
+        case FocusTimerChime::SoftDouble:
+          played = audio_.tone(resolve < 0 ? 880 : 1175, 85, kSoft) &&
+                   (delay(45), audio_.tone(resolve < 0 ? 740 : 1480, 115, kSoft));
+          break;
+        case FocusTimerChime::SharpBell:
+          played = audio_.tone(resolve < 0 ? 988 : 1568, 70, kSharp) &&
+                   (delay(35), audio_.tone(resolve < 0 ? 784 : 2093, 85, kSharp));
+          break;
+        case FocusTimerChime::HardHorn:
+          played = audio_.tone(resolve < 0 ? 330 : 392, 135, kHard) &&
+                   (delay(55), audio_.tone(resolve < 0 ? 294 : 523, 145, kHard));
+          break;
+        case FocusTimerChime::Melody:
+          played = audio_.tone(523, 80, kSoft) && (delay(35), audio_.tone(659, 80, kSoft)) &&
+                   (delay(35), audio_.tone(784, 90, kSoft)) &&
+                   (delay(40), audio_.tone(resolve < 0 ? 587 : 1047, 130, kSoft));
+          break;
+        case FocusTimerChime::Off:
+        default:
+          return;
+      }
+      flashCount = cue == FocusTimer::Cue::SessionComplete ? 3 : 2;
       break;
-    case FocusTimer::Cue::SessionComplete:
-      // A gentle two-note resolve for the whole session.
-      played = audio_.tone(990, 120, kSoft) && (delay(60), audio_.tone(1320, 160, kSoft));
-      flashCount = 3;
-      break;
+    }
     case FocusTimer::Cue::Cancelled:
       played = audio_.tone(440, 110, kTick);
       flashCount = 2;

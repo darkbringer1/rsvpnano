@@ -104,6 +104,15 @@ class App {
     Voltage = 2,
   };
 
+  enum class FocusTimerChime : uint8_t {
+    Off = 0,
+    SoftBell,
+    SoftDouble,
+    SharpBell,
+    HardHorn,
+    Melody,
+  };
+
   enum class PauseMode : uint8_t {
     SentenceEnd = 0,
     Instant = 1,
@@ -360,6 +369,8 @@ class App {
   uint32_t currentReaderContentToken() const;
   String formatFocusTimerRemaining(uint32_t nowMs) const;
   String formatFocusTimerDuration(uint32_t durationMs) const;
+  String focusTimerChimeLabel() const;
+  void cycleFocusTimerChime(uint32_t nowMs);
   void playFocusTimerCue(FocusTimer::Cue cue);
 
   AppState state_ = AppState::Booting;
@@ -493,7 +504,7 @@ class App {
   bool chapterTransitionVisible_ = false;
   bool batteryWarningOverlayVisible_ = false;
   bool focusTimerCancelHoldTriggered_ = false;
-  bool focusTimerChimeEnabled_ = true;
+  FocusTimerChime focusTimerChime_ = FocusTimerChime::SoftBell;
   bool orientationLockEnabled_ = false;  // false = app-wide 180 auto-rotate active
   bool autoFlip180_ = false;             // current IMU-driven 180 flip state
   bool autoFlipCandidate_ = false;

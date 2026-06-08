@@ -118,13 +118,19 @@ class FocusTimer {
   enum class OrientationState : uint8_t {
     Edge = 0,  // standing on a short side (either A or B)
     Flat,      // lying face up or down on a surface
-    Other,     // upright long side / held / unknown
+    Other,     // upright long edge / held / unknown
     Unknown,
+  };
+
+  enum class PauseSource : uint8_t {
+    None = 0,
+    Touch,
+    Orientation,
   };
 
   // ----- Timer mechanics -----
   void startPhase(Phase phase, uint32_t nowMs, uint32_t durationMs);
-  void pauseTimer(uint32_t nowMs);
+  void pauseTimer(uint32_t nowMs, PauseSource source);
   void resumeTimer(uint32_t nowMs);
   void completePhase(uint32_t nowMs);  // advance to next phase / wait / complete
   void cancel(uint32_t nowMs);
@@ -159,6 +165,7 @@ class FocusTimer {
   uint32_t pausedRemainingMs_ = 0;
   uint32_t pausedElapsedMs_ = 0;
   bool timerRunning_ = false;
+  PauseSource pauseSource_ = PauseSource::None;
 
   Cue pendingCue_ = Cue::None;
 
