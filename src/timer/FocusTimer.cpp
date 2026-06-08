@@ -14,6 +14,7 @@ constexpr uint32_t kOrientationStableMs = 700;
 // After any FSM transition, ignore orientation intents for a moment so the
 // gesture that caused the change does not immediately re-trigger.
 constexpr uint32_t kOrientationGraceMs = 1200;
+constexpr uint32_t kOrientationResumeStableMs = 450;
 
 // Setup field value ranges.
 constexpr uint16_t kWorkMinMin = 5;
@@ -127,6 +128,19 @@ void FocusTimer::nextField() {
   selectedField_ = static_cast<Field>((static_cast<uint8_t>(selectedField_) + 1) % kFieldCount);
 }
 
+void FocusTimer::stepField(int direction) {
+  if (direction == 0 || state_ != State::Setup) {
+    return;
+  }
+  int next = static_cast<int>(selectedField_) + direction;
+  if (next < 0) {
+    next = kFieldCount - 1;
+  } else if (next >= kFieldCount) {
+    next = 0;
+  }
+  selectedField_ = static_cast<Field>(next);
+}
+
 void FocusTimer::stepFieldValue(int direction) {
   if (direction == 0 || state_ != State::Setup) {
     return;
@@ -173,8 +187,6 @@ void FocusTimer::tap(uint32_t nowMs) {
     case State::Setup:
       if (selectedField_ == Field::Begin) {
         beginSession(nowMs);
-      } else {
-        nextField();
       }
       break;
     case State::WorkRunning:
@@ -313,6 +325,7 @@ void FocusTimer::startPhase(Phase phase, uint32_t nowMs, uint32_t durationMs) {
   timerDurationMs_ = durationMs;
   timerRunning_ = true;
   pausedRemainingMs_ = 0;
+  pausedElapsedMs_ = 0;
   pendingCue_ = Cue::Start;
 }
 
@@ -321,6 +334,8 @@ void FocusTimer::pauseTimer(uint32_t nowMs) {
     return;
   }
   pausedRemainingMs_ = remainingMs(nowMs);
+  pausedElapsedMs_ =
+      timerDurationMs_ > pausedRemainingMs_ ? timerDurationMs_ - pausedRemainingMs_ : 0;
   timerRunning_ = false;
   pendingCue_ = Cue::Pause;
   transitionTo(phase_ == Phase::Work ? State::WorkPaused : State::BreakPaused, nowMs);
@@ -329,11 +344,13 @@ void FocusTimer::pauseTimer(uint32_t nowMs) {
 void FocusTimer::resumeTimer(uint32_t nowMs) {
   if (pausedRemainingMs_ == 0) {
     pausedRemainingMs_ = minutesToMs(phase_ == Phase::Work ? cfg_.workMin : cfg_.breakMin);
+    timerDurationMs_ = pausedRemainingMs_;
+    pausedElapsedMs_ = 0;
   }
-  timerStartedMs_ = nowMs;
-  timerDurationMs_ = pausedRemainingMs_;
+  timerStartedMs_ = nowMs - pausedElapsedMs_;
   timerRunning_ = true;
   pausedRemainingMs_ = 0;
+  pausedElapsedMs_ = 0;
   pendingCue_ = Cue::Resume;
   transitionTo(phase_ == Phase::Work ? State::WorkRunning : State::BreakRunning, nowMs);
 }
@@ -342,6 +359,7 @@ void FocusTimer::completePhase(uint32_t nowMs) {
   const Phase finished = phase_;
   timerRunning_ = false;
   pausedRemainingMs_ = 0;
+  pausedElapsedMs_ = 0;
 
   if (finished == Phase::Work) {
     ++completedWorkBlocks_;
@@ -372,6 +390,7 @@ void FocusTimer::completePhase(uint32_t nowMs) {
 void FocusTimer::cancel(uint32_t nowMs) {
   timerRunning_ = false;
   pausedRemainingMs_ = 0;
+  pausedElapsedMs_ = 0;
   phase_ = Phase::None;
   pendingCue_ = Cue::Cancelled;
   transitionTo(State::Cancelled, nowMs);
@@ -385,6 +404,7 @@ void FocusTimer::clearSession() {
   timerStartedMs_ = 0;
   timerDurationMs_ = 0;
   pausedRemainingMs_ = 0;
+  pausedElapsedMs_ = 0;
   timerRunning_ = false;
   pendingCue_ = Cue::None;
   // preset_ / cfg_ / presets_ intentionally preserved.
@@ -429,6 +449,13 @@ void FocusTimer::applyOrientation(uint32_t nowMs) {
   if (!imuAvailable() || !orientationArmed(nowMs)) {
     return;
   }
+  const uint32_t resumeStableMs =
+      (state_ == State::WorkPaused || state_ == State::BreakPaused ||
+       state_ == State::WaitWorkStart)
+          ? kOrientationResumeStableMs
+          : kOrientationStableMs;
+  const bool orientationStableEnough =
+      candidateOrientation_ == stableOrientation_ && nowMs - candidateSinceMs_ >= resumeStableMs;
 
   switch (state_) {
     case State::WorkRunning:
@@ -441,13 +468,13 @@ void FocusTimer::applyOrientation(uint32_t nowMs) {
     case State::WorkPaused:
     case State::BreakPaused:
       // Stand it back up on a short edge to resume.
-      if (stableOrientation_ == OrientationState::Edge) {
+      if (stableOrientation_ == OrientationState::Edge && orientationStableEnough) {
         resumeTimer(nowMs);
       }
       break;
     case State::WaitWorkStart:
       // Stand on a short edge to start the next work block.
-      if (stableOrientation_ == OrientationState::Edge) {
+      if (stableOrientation_ == OrientationState::Edge && orientationStableEnough) {
         ++currentRound_;
         startPhase(Phase::Work, nowMs, minutesToMs(cfg_.workMin));
         transitionTo(State::WorkRunning, nowMs);
@@ -499,7 +526,13 @@ void FocusTimer::updateOrientation(uint32_t nowMs) {
     candidateSinceMs_ = nowMs;
     return;
   }
-  if ((nowMs - candidateSinceMs_) >= kOrientationStableMs) {
+  const uint32_t stableMs =
+      ((state_ == State::WorkPaused || state_ == State::BreakPaused ||
+        state_ == State::WaitWorkStart) &&
+       candidateOrientation_ == OrientationState::Edge)
+          ? kOrientationResumeStableMs
+          : kOrientationStableMs;
+  if ((nowMs - candidateSinceMs_) >= stableMs) {
     stableOrientation_ = candidateOrientation_;
   }
 }

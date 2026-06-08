@@ -348,7 +348,7 @@ bool readBatteryStatus(BatteryStatus &status) {
   status = BatteryStatus{};
 #if defined(BOARD_AMOLED_18)
   if (pmuBeginInternal()) {
-    status.charging = gPmu.isCharging();
+    status.charging = gPmu.isVbusIn() && gPmu.isCharging();
     status.voltage = static_cast<float>(gPmu.getBattVoltage()) / 1000.0f;
     const int pct = gPmu.getBatteryPercent();
     status.present = gPmu.isBatteryConnect();

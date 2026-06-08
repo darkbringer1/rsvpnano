@@ -876,6 +876,16 @@ void DisplayManager::setBatteryLabel(const String &label) {
   lastRenderKey_ = "";
 }
 
+void DisplayManager::setBatteryCharging(bool charging) {
+  if (batteryCharging_ == charging) {
+    return;
+  }
+
+  batteryCharging_ = charging;
+  tickerPlaybackFrameActive_ = false;
+  lastRenderKey_ = "";
+}
+
 void DisplayManager::setBrightnessPercent(uint8_t percent) {
   if (percent == 0) {
     percent = 1;
@@ -1622,9 +1632,36 @@ void DisplayManager::drawBatteryBadge(int logicalWidth, int logicalHeight) {
     return;
   }
 
-  const int width = measureTinyTextWidth(batteryLabel_, kTinyScale);
-  const int x = std::max(kFooterMarginX, logicalWidth - kFooterMarginX - width);
+  // Lightning icon pixel pattern (5x7), drawn at kTinyScale.
+  static constexpr uint8_t kChargeRows[kTinyGlyphHeight] = {
+    0x04, // ..X..
+    0x0C, // .XX..
+    0x18, // XX...
+    0x1E, // XXXX.
+    0x06, // ..XX.
+    0x0C, // .XX..
+    0x08, // .X...
+  };
+
+  const int textWidth = measureTinyTextWidth(batteryLabel_, kTinyScale);
+  const int iconW = kTinyGlyphWidth * kTinyScale;
+  const int iconSpacing = 4;
+  const int chargeWidth = batteryCharging_ ? iconW + iconSpacing : 0;
+  const int width = chargeWidth + textWidth;
+  int x = std::max(kFooterMarginX, logicalWidth - kFooterMarginX - width);
   const int y = logicalHeight > (kDisplayHeight * 2) ? kFooterMarginBottom + 8 : kFooterMarginBottom;
+  if (batteryCharging_) {
+    const uint16_t color = focusColor();
+    for (int row = 0; row < kTinyGlyphHeight; ++row) {
+      for (int col = 0; col < kTinyGlyphWidth; ++col) {
+        if (kChargeRows[row] & (1 << (kTinyGlyphWidth - 1 - col))) {
+          fillVirtualRect(x + col * kTinyScale, y + row * kTinyScale, kTinyScale, kTinyScale,
+                          color);
+        }
+      }
+    }
+    x += iconW + iconSpacing;
+  }
   drawTinyTextAt(batteryLabel_, x, y, footerColor(), kTinyScale);
 }
 
@@ -1646,7 +1683,8 @@ void DisplayManager::drawBrightnessToastBadge(const String &text) {
   const int totalWidth = iconW + iconSpacing + textWidth;
   const int batteryW = batteryLabel_.isEmpty()
                            ? 0
-                           : measureTinyTextWidth(batteryLabel_, kTinyScale) + 10;
+                           : measureTinyTextWidth(batteryLabel_, kTinyScale) +
+                                 (batteryCharging_ ? iconW + iconSpacing : 0) + 10;
   const int rightEdge = logicalWidth() - kFooterMarginX - batteryW;
   const int x = rightEdge - totalWidth - 4;
   const int y = kFooterMarginBottom;

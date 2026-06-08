@@ -394,11 +394,13 @@ class App {
   uint32_t brightnessToastUntilMs_ = 0;
   uint32_t lastProgressSaveMs_ = 0;
   uint32_t lastBatterySampleMs_ = 0;
+  uint32_t lastBatteryPowerSourcePollMs_ = 0;
   uint32_t batteryRuntimeAnchorMs_ = 0;
   uint32_t lastScrollAnimationRenderMs_ = 0;
   uint32_t lastBatteryLabelRefreshMs_ = 0;
   uint32_t lastUserActivityMs_ = 0;
   uint32_t lastCompanionSyncRenderMs_ = 0;
+  uint32_t lastFocusTimerActionMs_ = 0;
   uint32_t lastReaderTapMs_ = 0;
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
@@ -515,6 +517,9 @@ class App {
   bool pendingBootBookLoad_ = false;
   bool pendingBootBookLegacyFallback_ = false;
   bool batteryPresent_ = false;
+  bool batteryCharging_ = false;
+  bool batteryVbusPresent_ = false;
+  bool batteryVbusSampleInitialized_ = false;
   bool batterySampleInitialized_ = false;
   bool batteryRuntimeEstimateReady_ = false;
   uint8_t batteryCriticalSampleCount_ = 0;

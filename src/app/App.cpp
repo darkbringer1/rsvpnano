@@ -51,6 +51,7 @@ constexpr int kMaxScrubStepsPerGesture = 96;
 constexpr uint32_t kBrowseMinWordsPerSecondPermille = 4000;
 constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
+constexpr uint32_t kFocusTimerActionCooldownMs = 1400;
 constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
@@ -60,6 +61,7 @@ constexpr uint32_t kNominalBatteryRuntimeMinutes = 450;  // ~7.5h with CPU frequ
 constexpr uint8_t kBatteryDisplayHysteresisPercent = 2;
 constexpr uint8_t kBatteryRuntimeMinDropPercent = 3;
 constexpr uint32_t kBatteryRuntimeMinElapsedMs = 10UL * 60UL * 1000UL;
+constexpr uint32_t kBatteryPowerSourcePollIntervalMs = 1000;
 constexpr uint32_t kBatteryPlayingSampleIntervalMs = 10UL * 60UL * 1000UL;
 constexpr uint32_t kBatteryLowSampleIntervalMs = 60UL * 1000UL;
 constexpr uint32_t kBatteryLowWarningRepeatMs = 5UL * 60UL * 1000UL;
@@ -1399,9 +1401,15 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
   const BoardConfig::PowerKeyEvent event = BoardConfig::pmuPollPowerKey();
   switch (event) {
     case BoardConfig::PowerKeyEvent::LongPress:
-      // Hold = power off. The hold itself is the confirmation, so no prompt.
-      Serial.println("[power] PWRKEY long press -> power off");
-      enterPowerOff(nowMs);
+      if (state_ == AppState::PowerSaving) {
+        if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
+          exitPowerSaving(nowMs);
+        }
+      } else {
+        // Hold = power off. The hold itself is the confirmation, so no prompt.
+        Serial.println("[power] PWRKEY long press -> power off");
+        enterPowerOff(nowMs);
+      }
       break;
     case BoardConfig::PowerKeyEvent::ShortPress:
       // Tap toggles deep standby (screen + touch off). It is the only gesture for
@@ -1831,7 +1839,20 @@ void App::cycleReaderFontSize(uint32_t nowMs) {
 }
 
 bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
-  if (!force) {
+  bool powerSourceChanged = false;
+  if (force || nowMs - lastBatteryPowerSourcePollMs_ >= kBatteryPowerSourcePollIntervalMs) {
+    lastBatteryPowerSourcePollMs_ = nowMs;
+    const bool vbusPresent = BoardConfig::pmuVbusPresent();
+    if (!batteryVbusSampleInitialized_) {
+      batteryVbusPresent_ = vbusPresent;
+      batteryVbusSampleInitialized_ = true;
+    } else if (batteryVbusPresent_ != vbusPresent) {
+      batteryVbusPresent_ = vbusPresent;
+      powerSourceChanged = true;
+    }
+  }
+
+  if (!force && !powerSourceChanged) {
     const bool lowBatteryKnown =
         batteryPresent_ && batterySampleInitialized_ &&
         (batteryFilteredVoltage_ <= kBatteryLowWarningVoltage ||
@@ -1849,8 +1870,10 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
   lastBatterySampleMs_ = nowMs;
 
   BoardConfig::BatteryStatus status;
+  const bool wasCharging = batteryCharging_;
   if (BoardConfig::readBatteryStatus(status)) {
     batteryPresent_ = true;
+    batteryCharging_ = status.charging && batteryVbusPresent_;
     if (!batterySampleInitialized_) {
       batteryFilteredVoltage_ = status.voltage;
       batteryFilteredPercent_ = status.percent;
@@ -1889,8 +1912,11 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
     }
   } else {
     batteryPresent_ = false;
+    batteryCharging_ = false;
     batteryCriticalSampleCount_ = 0;
   }
+  const bool chargingChanged = batteryCharging_ != wasCharging;
+  display_.setBatteryCharging(batteryCharging_);
 
   handleBatteryProtection(nowMs);
   if (powerOffStarted_) {
@@ -1898,7 +1924,7 @@ bool App::updateBatteryStatus(uint32_t nowMs, bool force) {
   }
 
   const String nextLabel = currentBatteryLabel();
-  if (nextLabel == batteryLabel_) {
+  if (nextLabel == batteryLabel_ && !chargingChanged) {
     return false;
   }
 
@@ -2746,6 +2772,10 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
       absDeltaX <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       absDeltaY <= static_cast<int>(kFocusTimerCancelHoldMaxDriftPx) &&
       nowMs - pausedTouch_.startMs >= kFocusTimerCancelHoldMs) {
+    if (nowMs - lastFocusTimerActionMs_ < kFocusTimerActionCooldownMs) {
+      return;
+    }
+    lastFocusTimerActionMs_ = nowMs;
     pausedTouch_.active = false;
     focusTimerCancelHoldTriggered_ = true;
     focusTimer_.hold(nowMs);
@@ -2767,17 +2797,49 @@ void App::applyFocusTimerTouch(const TouchEvent &event, uint32_t nowMs) {
 
   const bool tapLike = absDeltaX <= static_cast<int>(kTapSlopPx) &&
                        absDeltaY <= static_cast<int>(kTapSlopPx);
-  const bool swipeLike = absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
-                         absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx);
+  const bool horizontalSwipe = absDeltaX >= static_cast<int>(kSwipeThresholdPx) &&
+                               absDeltaX > absDeltaY + static_cast<int>(kAxisBiasPx);
+  const bool verticalSwipe = absDeltaY >= static_cast<int>(kSwipeThresholdPx) &&
+                             absDeltaY > absDeltaX + static_cast<int>(kAxisBiasPx);
 
   const FocusTimer::State before = focusTimer_.state();
 
-  if (swipeLike) {
-    focusTimer_.swipe(deltaX > 0 ? 1 : -1, nowMs);
-    if (before == FocusTimer::State::Setup) {
+  if (before == FocusTimer::State::Setup) {
+    if (verticalSwipe) {
+      focusTimer_.stepField(deltaY > 0 ? 1 : -1);
+    } else if (horizontalSwipe) {
+      focusTimer_.stepFieldValue(deltaX > 0 ? 1 : -1);
       saveFocusTimerPreset(focusTimer_.preset());
+    } else if (tapLike) {
+      focusTimer_.tap(nowMs);
+      playFocusTimerCue(focusTimer_.consumeCue());
+    } else {
+      return;
     }
+    renderFocusTimerSession();
+    return;
+  }
+
+  if (horizontalSwipe) {
+    if (nowMs - lastFocusTimerActionMs_ < kFocusTimerActionCooldownMs) {
+      renderFocusTimerSession();
+      return;
+    }
+    lastFocusTimerActionMs_ = nowMs;
+    focusTimer_.swipe(deltaX > 0 ? 1 : -1, nowMs);
   } else if (tapLike) {
+    const bool debouncedTapAction =
+        before == FocusTimer::State::WorkRunning || before == FocusTimer::State::BreakRunning ||
+        before == FocusTimer::State::WorkPaused || before == FocusTimer::State::BreakPaused ||
+        before == FocusTimer::State::WaitWorkStart || before == FocusTimer::State::Complete ||
+        before == FocusTimer::State::Cancelled;
+    if (debouncedTapAction) {
+      if (nowMs - lastFocusTimerActionMs_ < kFocusTimerActionCooldownMs) {
+        renderFocusTimerSession();
+        return;
+      }
+      lastFocusTimerActionMs_ = nowMs;
+    }
     focusTimer_.tap(nowMs);
   } else {
     return;
@@ -2806,6 +2868,7 @@ void App::openFocusTimerPresetPicker() {
                                        ? kFocusTimerPresetFirstIndex
                                        : kFocusTimerPresetBackIndex;
   focusTimerCancelHoldTriggered_ = false;
+  lastFocusTimerActionMs_ = 0;
   pausedTouch_.active = false;
   menuScreen_ = MenuScreen::FocusTimerPresets;
   renderFocusTimerPresets();
@@ -2886,6 +2949,7 @@ void App::selectFocusTimerPreset(uint32_t nowMs) {
 
   focusTimer_.selectPreset(static_cast<FocusTimer::Preset>(presetIdx), nowMs);
   focusTimerCancelHoldTriggered_ = false;
+  lastFocusTimerActionMs_ = 0;
   pausedTouch_.active = false;
   menuScreen_ = MenuScreen::FocusTimerSession;
   renderFocusTimerSession();
@@ -4804,6 +4868,40 @@ void App::enterPowerOff(uint32_t nowMs) {
     return;
   }
 
+#if defined(BOARD_AMOLED_18)
+  Serial.println("[app] soft power off; PWR wakes from PMU-polled standby");
+  // Count the final reading segment and persist lifetime totals before sleeping
+  // (this sets state directly, bypassing setState's normal accrual).
+  if (state_ == AppState::Playing && nowMs >= playingStartedMs_) {
+    lifetimeReadMs_ += nowMs - playingStartedMs_;
+    lifetimeStatsDirty_ = true;
+  }
+  saveReadingPosition(true);
+  saveLifetimeStats();
+  pausedTouch_.active = false;
+  pausedTouchIntent_ = TouchIntent::None;
+  touchPlayHeld_ = false;
+  playLocked_ = false;
+  pauseAtSentenceEndRequested_ = false;
+  contextViewVisible_ = false;
+  wpmFeedbackVisible_ = false;
+  batteryWarningOverlayVisible_ = false;
+  menuScreen_ = MenuScreen::Main;
+
+  display_.renderStatus("Goodbye", "", "");
+  delay(1200);  // let the user see the farewell before the panel blanks
+  if (touchInitialized_) {
+    touch_.cancel();
+  }
+  display_.prepareForSleep();
+  screensaver_.clearScreenOff();
+
+  powerSaveReturnState_ = AppState::Paused;
+  powerSaveEnteredMs_ = millis();
+  setState(AppState::PowerSaving, powerSaveEnteredMs_);
+  return;
+#endif
+
   powerOffStarted_ = true;
   Serial.println("[app] powering off; hold PWR to start again");
   // Count the final reading segment and persist lifetime totals before sleeping
@@ -5554,44 +5652,44 @@ void App::renderFocusTimerSession() {
       body += row(FocusTimer::Field::Work, "Work", String(c.workMin) + "m");
       body += row(FocusTimer::Field::Break, "Break", String(c.breakMin) + "m");
       body += row(FocusTimer::Field::Rounds, "Rounds", String(c.rounds));
-      body += row(FocusTimer::Field::LongBreak, "Long", String(c.longBreakMin) + "m");
+      body += row(FocusTimer::Field::LongBreak, "Long break", String(c.longBreakMin) + "m");
       body += (sel == FocusTimer::Field::Begin ? "> Begin" : "  Begin");
       String mode = FocusTimer::presetLabel(focusTimer_.preset());
       mode.toUpperCase();
       display_.renderFocusTimerScreen(mode, "Setup", "", body,
-                                      "Tap = next  Swipe = change  Hold = back");
+                                      "Swipe up/down - row\nSwipe left/right - value\nTap Begin - Hold back");
       return;
     }
 
     case FocusTimer::State::WorkRunning:
       display_.renderFocusTimerScreen("WORK", roundLabel, remainingLabel,
-                                      "Tap = pause  Swipe = skip  Hold = cancel", "",
+                                      "Tap pause - swipe skip\nHold cancel", "",
                                       focusTimer_.progressPercent(now));
       return;
 
     case FocusTimer::State::WorkPaused:
       display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
-                                      "Tap or stand up to resume\nHold = cancel", "",
+                                      "Tap resume - stand on side\nHold cancel", "",
                                       focusTimer_.progressPercent(now));
       return;
 
     case FocusTimer::State::BreakRunning:
       display_.renderFocusTimerScreen(focusTimer_.isLongBreak() ? "LONG BREAK" : "BREAK",
                                       roundLabel, remainingLabel,
-                                      "Tap = pause  Swipe = skip  Hold = cancel", "",
+                                      "Tap pause - swipe skip\nHold cancel", "",
                                       focusTimer_.progressPercent(now), true);
       return;
 
     case FocusTimer::State::BreakPaused:
       display_.renderFocusTimerScreen("PAUSED", roundLabel, remainingLabel,
-                                      "Tap or stand up to resume\nHold = cancel", "",
+                                      "Tap resume - stand on side\nHold cancel", "",
                                       focusTimer_.progressPercent(now), true);
       return;
 
     case FocusTimer::State::WaitWorkStart:
       display_.renderFocusTimerScreen("WORK", "Next: round " + String(focusTimer_.currentRound() + 1),
-                                      "", "Tap to start work\n(or stand on a short side)",
-                                      "Hold = cancel");
+                                      "", "Tap start - stand on side",
+                                      "Hold cancel");
       return;
 
     case FocusTimer::State::Complete:
@@ -6065,10 +6163,13 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
   if (cue == FocusTimer::Cue::None || !focusTimerChimeEnabled_) {
     return;
   }
+  if (!audio_.available()) {
+    audio_.begin();
+  }
 
   // Soft, undistracting amplitude for completion chimes.
-  constexpr int16_t kSoft = 6000;
-  constexpr int16_t kTick = 4000;
+  constexpr int16_t kSoft = 9000;
+  constexpr int16_t kTick = 7000;
 
   bool played = false;
   int flashCount = 1;
@@ -6112,13 +6213,17 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
     return;
   }
 
-  // Audio path unavailable: fall back to a brief backlight flash.
+  // Audio path unavailable: fall back to a brief backlight flash where a real backlight exists.
+#if defined(BOARD_AMOLED_18)
+  Serial.println("[timer] chime unavailable");
+#else
   for (int i = 0; i < flashCount; ++i) {
     digitalWrite(BoardConfig::PIN_LCD_BACKLIGHT, HIGH);
     delay(55);
     digitalWrite(BoardConfig::PIN_LCD_BACKLIGHT, LOW);
     delay(45);
   }
+#endif
 }
 
 bool App::scrollModeEnabled() const { return readerMode_ == ReaderMode::Scroll; }

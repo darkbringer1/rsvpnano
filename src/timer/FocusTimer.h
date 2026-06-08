@@ -84,6 +84,7 @@ class FocusTimer {
   Field selectedField() const { return selectedField_; }
   void selectField(Field field);
   void nextField();                    // cycle field selection
+  void stepField(int direction);       // change selected setup row
   void stepFieldValue(int direction);  // change value of the selected field
   void beginSession(uint32_t nowMs);   // start first work block
 
@@ -156,6 +157,7 @@ class FocusTimer {
   uint32_t timerStartedMs_ = 0;
   uint32_t timerDurationMs_ = 0;
   uint32_t pausedRemainingMs_ = 0;
+  uint32_t pausedElapsedMs_ = 0;
   bool timerRunning_ = false;
 
   Cue pendingCue_ = Cue::None;
