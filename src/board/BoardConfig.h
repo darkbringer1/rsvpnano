@@ -125,7 +125,7 @@ enum class PowerKeyEvent : uint8_t {
   None,
   PressDown,   // button went down (negative edge) — show the confirm prompt
   ShortPress,  // quick tap and release
-  LongPress,   // held past the PMU long-press threshold — commit to power off
+  LongPress,   // held past the PMU long-press threshold
 };
 
 void begin();

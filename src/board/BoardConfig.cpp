@@ -239,7 +239,7 @@ bool readBatteryStatusAxp2101(BatteryStatus &status) {
   return true;
 }
 
-// --- AXP2101 PMU control via XPowersLib (PWR button + real power off) --------
+// --- AXP2101 PMU control via XPowersLib (PWR button + battery telemetry) -----
 // The hand-rolled reads above stay as a fallback; once the library PMU is up we
 // prefer it because it also gives PWRKEY events, charging state, and shutdown().
 XPowersAXP2101 gPmu;
@@ -264,12 +264,12 @@ bool pmuBeginInternal() {
   gPmu.enableVbusVoltageMeasure();
   gPmu.enableSystemVoltageMeasure();
 
-  // PWRKEY timing: a long hold (~4s) powers off; while OFF, the PMU powers the
-  // board back on only when PWRKEY is held ~2s (a tap will not power on).
+  // PWRKEY timing while the PMU is running. AXP2101 rail-cut wake was not
+  // reliable on the AMOLED board in battery testing, so App uses ESP deep sleep.
   gPmu.setPowerKeyPressOffTime(XPOWERS_POWEROFF_4S);
   gPmu.setPowerKeyPressOnTime(XPOWERS_POWERON_2S);
 
-  // PWRKEY events: short tap (ignored) and long press (commit to power off).
+  // PWRKEY events: short tap and long press.
   // Clear any latched state from boot.
   gPmu.disableIRQ(XPOWERS_AXP2101_ALL_IRQ);
   gPmu.clearIrqStatus();
@@ -305,7 +305,7 @@ void begin() {
   disableBatteryAdcPathIfAvailable();
 
 #if defined(BOARD_AMOLED_18)
-  pmuBeginInternal();  // bring up the AXP2101 PMU (PWR button + battery + power off)
+  pmuBeginInternal();  // bring up the AXP2101 PMU (PWR button + battery telemetry)
 #endif
 
 #if !defined(BOARD_AMOLED_18)
@@ -472,7 +472,7 @@ void pmuShutdown() {
 #if defined(BOARD_AMOLED_18)
   if (pmuBeginInternal()) {
     Serial.flush();
-    gPmu.shutdown();  // cut the main rail; only PWRKEY can power back on
+    gPmu.shutdown();  // cut the main rail; not used for AMOLED app power-off
   }
 #endif
 }

@@ -67,13 +67,14 @@ canonical button-map comment above it (the single source of truth).
 | **Double-tap (menu)** | Select the highlighted item |
 | BOOT short press | Open / back out of the menu |
 | BOOT long press | Cycle brightness |
-| PWR short press | Ignored (avoids accidental power-off) |
-| PWR long press (hold) | Power off ("Goodbye" + PMU shutdown) |
-| PWR hold while off | Power on (PMU; BOOT/touch cannot power on) |
+| PWR short press | Deep-sleep standby (screen/touch off) |
+| PWR long press (hold) | Deep-sleep standby ("Goodbye", screen/touch off) |
+| BOOT in deep-sleep standby | Wake / reboot back into app |
 
-On USB, a true power-off can't hold (VBUS keeps the PMU fed), so power-off
-deep-sleeps the device dark instead; on battery the PMU cuts the rail and only
-a PWR hold powers back on.
+AXP2101 rail-cut is intentionally not used on this board right now: battery
+testing showed that it shuts down but does not wake from PWRKEY unless USB is
+inserted. Standby uses ESP deep sleep with BOOT/GPIO0 as the verified wake
+source.
 
 ### Double-tap to select
 
@@ -132,17 +133,17 @@ is driven through **XPowersLib** (`src/board/BoardConfig.cpp`, guarded by
 `BOARD_AMOLED_18`).
 
 - **PWR button = PWRKEY.** `pmuPollPowerKey()` reads the PMU's PWRKEY IRQ (short
-  vs long press); `App::updatePmuPowerKey()` maps long-press → power off.
-- **Real power off.** `pmuShutdown()` cuts the rail on battery. On USB, VBUS keeps
-  the PMU alive, so `enterPowerOff()` checks `pmuVbusPresent()` and deep-sleeps
-  the device dark instead of shutting down (avoids a VBUS-triggered reboot loop).
-  PWR press-on/off timing is set via `setPowerKeyPressOnTime/OffTime`.
+  vs long press); `App::updatePmuPowerKey()` maps it to deep-sleep standby.
+- **Deep-sleep standby instead of rail-cut.** `enterPowerOff()` saves state,
+  turns the display/touch path dark, turns Wi-Fi off, closes storage, and enters
+  ESP deep sleep with BOOT/GPIO0 as the wake source. AXP2101 rail-cut is disabled
+  because this hardware did not restart from PWRKEY on battery without USB.
 - **Battery telemetry** comes from the same PMU: `getBatteryPercent()`,
   `getBattVoltage()`, `isCharging()`, `isBatteryConnect()`, `isVbusIn()`.
 
-> **Battery path UNVERIFIED.** Developed on USB only (no battery). True power-off
-> rail-cut and PWR-hold-to-power-on are only fully testable on battery. On USB
-> the boot log shows `[boot] RTC present: … | PMU VBUS:1 BAT:0 …`.
+> **Battery rail-cut failed wake testing.** The board cut power, but PWR hold did
+> not restart it until USB was inserted. Keep PMU shutdown disabled unless the
+> board-level wake source is identified and verified.
 
 ---
 
@@ -190,7 +191,7 @@ fork for OTA to pick them up.
 | Menu (BOOT button) + double-tap select | ✅ Working | |
 | Swipe-right back (menu) | ✅ New | |
 | Brightness (BOOT long-press) | ✅ Working | |
-| PWR button + real power off (AXP2101) | ✅ Working | USB deep-sleeps dark; battery rail-cut UNVERIFIED |
+| PWR button + deep-sleep standby | ✅ Working | BOOT wakes; rail-cut disabled because AXP2101 shutdown did not PWR-wake |
 | Clock / timezone (PCF85063 RTC) | ✅ New | NTP + geo-IP auto-tz; manual set in Settings > Clock |
 | Book completion summary | ✅ New | |
 | Reading stats + streak | ✅ New | Streak needs day rollover to fully verify |

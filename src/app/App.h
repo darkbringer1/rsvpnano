@@ -276,6 +276,7 @@ class App {
   void handleAmoledStandbyWake(uint32_t nowMs);
   void enterPowerSaving(uint32_t nowMs);
   void exitPowerSaving(uint32_t nowMs);
+  void enterAmoledDeepSleepStandby(uint32_t nowMs, bool showGoodbye);
   void updateDeepStandbyIdle(uint32_t nowMs);
   String deepStandbyDelayLabel() const;
 #endif
@@ -423,7 +424,7 @@ class App {
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
   uint32_t powerSaveEnteredMs_ = 0;
-  uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; auto-enter screen-off standby.
+  uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; auto-enter deep-sleep standby.
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
