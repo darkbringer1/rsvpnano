@@ -180,6 +180,9 @@ class DisplayManager {
   void drawSerif70TextCentered(const String &text, int y, uint16_t color, int width, int xOffset);
   void drawSerifTextScaledCentered(const String &text, int y, uint16_t color, uint8_t scalePercent,
                                    int width, int xOffset);
+  uint8_t statusTitleScalePercent(const String &title, int maxWidth) const;
+  void drawStatusTitleCentered(const String &title, int y, uint16_t color, uint8_t scalePercent,
+                               int width, int xOffset);
   void drawBatteryBadge();
   void drawBatteryBadge(int logicalWidth, int logicalHeight);
   void drawBrightnessToastBadge(const String &text);

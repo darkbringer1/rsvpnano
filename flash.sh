@@ -40,15 +40,46 @@ if [[ ! -x "$PIO" ]]; then
   exit 1
 fi
 
+serial_ports() {
+  local ports=()
+  shopt -s nullglob
+  ports=(/dev/cu.usbmodem* /dev/cu.usbserial*)
+  shopt -u nullglob
+  if ((${#ports[@]})); then
+    printf '%s\n' "${ports[@]}" | sort
+  fi
+}
+
+wait_for_port() {
+  local preferred="$1"
+  local deadline=$((SECONDS + 12))
+  local port=""
+
+  while (( SECONDS < deadline )); do
+    if [[ -n "$preferred" && -e "$preferred" ]]; then
+      echo "$preferred"
+      return 0
+    fi
+
+    port="$(serial_ports | head -n1 || true)"
+    if [[ -n "$port" ]]; then
+      echo "$port"
+      return 0
+    fi
+    sleep 0.25
+  done
+
+  return 1
+}
+
 # Auto-detect the device port if not given (first usbmodem/usbserial).
 if [[ -z "$PORT" ]]; then
-  PORT="$(ls /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null | head -n1 || true)"
+  PORT="$(serial_ports | head -n1 || true)"
 fi
 
 UPLOAD_ARGS=()
 if [[ -n "$PORT" ]]; then
   echo ">> port: $PORT"
-  UPLOAD_ARGS=(--upload-port "$PORT")
 else
   echo ">> port: auto (none detected; let esptool find it)"
 fi
@@ -57,11 +88,33 @@ if [[ -n "$VERSION" ]]; then
   echo ">> version: $VERSION"
 fi
 
-echo ">> building + flashing env '$ENV'..."
+echo ">> building env '$ENV'..."
 if [[ -n "$VERSION" ]]; then
-  RSVP_FIRMWARE_VERSION="$VERSION" "$PIO" run -e "$ENV" -t upload "${UPLOAD_ARGS[@]}"
+  RSVP_FIRMWARE_VERSION="$VERSION" "$PIO" run -e "$ENV"
 else
-  "$PIO" run -e "$ENV" -t upload "${UPLOAD_ARGS[@]}"
+  "$PIO" run -e "$ENV"
+fi
+
+UPLOAD_ARGS=()
+if [[ -n "$PORT" ]]; then
+  echo ">> rescanning port before upload..."
+  refreshed_port="$(wait_for_port "$PORT" || true)"
+  if [[ -n "$refreshed_port" ]]; then
+    if [[ "$refreshed_port" != "$PORT" ]]; then
+      echo ">> port changed: $PORT -> $refreshed_port"
+      PORT="$refreshed_port"
+    fi
+    UPLOAD_ARGS=(--upload-port "$PORT")
+  else
+    echo ">> port disappeared; letting esptool auto-detect"
+  fi
+fi
+
+echo ">> flashing env '$ENV'..."
+if [[ -n "$VERSION" ]]; then
+  RSVP_FIRMWARE_VERSION="$VERSION" "$PIO" run -e "$ENV" -t upload --disable-auto-clean "${UPLOAD_ARGS[@]}"
+else
+  "$PIO" run -e "$ENV" -t upload --disable-auto-clean "${UPLOAD_ARGS[@]}"
 fi
 
 echo ">> done. Cold-replug the device (unplug + replug) before judging the screen."

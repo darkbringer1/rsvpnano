@@ -9,6 +9,6 @@ enum class AppState {
   CompanionSync,
   UsbTransfer,
   Standby,
-  PowerSaving,  // AMOLED deep standby: screen + touch off, wakes only on PWR tap.
+  PowerSaving,  // AMOLED screen-off standby; may escalate to PMU shutdown on battery.
   Sleeping,
 };

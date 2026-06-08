@@ -54,6 +54,9 @@ constexpr int kTinyGlyphWidth = 5;
 constexpr int kTinyGlyphHeight = 7;
 constexpr int kTinyGlyphSpacing = 1;
 constexpr int kTinyScale = 2;
+constexpr uint8_t kStatusTitleScaleLarge = 80;
+constexpr uint8_t kStatusTitleScaleMedium = 70;
+constexpr uint8_t kStatusTitleScaleSmall = 60;
 #if defined(BOARD_AMOLED_18)
 constexpr int kFooterMarginX = 34;       // clear rounded corners (left/right chrome)
 constexpr int kFooterMarginBottom = 18;  // clear rounded corners (top/bottom chrome)
@@ -1623,6 +1626,22 @@ void DisplayManager::drawSerifTextScaledCentered(const String &text, int y, uint
                         scalePercent);
 }
 
+uint8_t DisplayManager::statusTitleScalePercent(const String &title, int maxWidth) const {
+  if (measureSerifTextWidthScaled(title, kStatusTitleScaleLarge) <= maxWidth) {
+    return kStatusTitleScaleLarge;
+  }
+  if (measureSerifTextWidthScaled(title, kStatusTitleScaleMedium) <= maxWidth) {
+    return kStatusTitleScaleMedium;
+  }
+  return kStatusTitleScaleSmall;
+}
+
+void DisplayManager::drawStatusTitleCentered(const String &title, int y, uint16_t color,
+                                             uint8_t scalePercent, int width, int xOffset) {
+  const String fitted = fitSerifTextScaled(title, width, scalePercent);
+  drawSerifTextScaledCentered(fitted, y, color, scalePercent, width, xOffset);
+}
+
 void DisplayManager::drawBatteryBadge() {
   drawBatteryBadge(kDisplayWidth, kDisplayHeight);
 }
@@ -3087,7 +3106,10 @@ void DisplayManager::renderStatus(const String &title, const String &line1, cons
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
   const int virtualHeight = kDisplayHeight;
-  const int glyphHeight = baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(title));
+  const int titleMaxWidth = virtualWidth - 36;
+  const uint8_t titleScale = statusTitleScalePercent(title, titleMaxWidth);
+  const int glyphHeight = scaledPercentDimension(
+      baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(title)), titleScale);
   const int titleY = std::max(0, (virtualHeight - glyphHeight) / 2 - 26);
   const int line1Y = std::min(virtualHeight - kTinyGlyphHeight * kTinyScale,
                               titleY + glyphHeight + 22);
@@ -3095,7 +3117,8 @@ void DisplayManager::renderStatus(const String &title, const String &line1, cons
                               line1Y + kTinyGlyphHeight * kTinyScale + 10);
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
-  drawWordLine(title, titleY, wordColor());
+  drawStatusTitleCentered(title, titleY, wordColor(), titleScale, titleMaxWidth,
+                          (virtualWidth - titleMaxWidth) / 2);
   if (!line1.isEmpty()) {
     drawTinyTextCentered(line1, line1Y, dimColor(), kTinyScale);
   }
@@ -3123,7 +3146,10 @@ void DisplayManager::renderProgress(const String &title, const String &line1, co
   const int scale = 1;
   const int virtualWidth = kDisplayWidth;
   const int virtualHeight = kDisplayHeight;
-  const int glyphHeight = baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(title));
+  const int titleMaxWidth = virtualWidth - 36;
+  const uint8_t titleScale = statusTitleScalePercent(title, titleMaxWidth);
+  const int glyphHeight = scaledPercentDimension(
+      baseGlyphHeightForTypeface(effectiveReaderTypefaceForText(title)), titleScale);
   const int titleY = std::max(0, (virtualHeight - glyphHeight) / 2 - 34);
   const int line1Y = std::min(virtualHeight - kTinyGlyphHeight * kTinyScale,
                               titleY + glyphHeight + 18);
@@ -3136,7 +3162,8 @@ void DisplayManager::renderProgress(const String &title, const String &line1, co
                             line2Y + kTinyGlyphHeight * kTinyScale + 14);
 
   clearVirtualBuffer(virtualWidth, virtualHeight);
-  drawWordLine(title, titleY, wordColor());
+  drawStatusTitleCentered(title, titleY, wordColor(), titleScale, titleMaxWidth,
+                          (virtualWidth - titleMaxWidth) / 2);
   if (!line1.isEmpty()) {
     drawTinyTextCentered(line1, line1Y, dimColor(), kTinyScale);
   }

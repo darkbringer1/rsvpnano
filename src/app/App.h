@@ -423,7 +423,7 @@ class App {
   uint32_t standbyComboStartedMs_ = 0;
   uint32_t standbyEnteredMs_ = 0;
   uint32_t powerSaveEnteredMs_ = 0;
-  uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; PWR-tap deep standby auto-enter.
+  uint32_t deepStandbyDelayMs_ = 5UL * 60UL * 1000UL;  // 0 = off; auto-enter screen-off standby.
   uint32_t chapterTransitionUntilMs_ = 0;
   uint32_t lastLowBatteryWarningMs_ = 0;
   uint32_t batteryWarningRestoreAtMs_ = 0;
