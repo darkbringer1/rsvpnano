@@ -78,6 +78,29 @@ bool AudioManager::begin() {
   return true;
 }
 
+void AudioManager::end() {
+  if (available_) {
+    uint8_t dacMute = 0;
+    if (readCodecRegister(kEs8311DacReg31, dacMute)) {
+      writeCodecRegister(kEs8311DacReg31, static_cast<uint8_t>(dacMute | 0x60U));
+    }
+    writeCodecRegister(kEs8311DacReg32, 0x00);
+    writeCodecRegister(kEs8311SystemReg0E, 0x00);
+    writeCodecRegister(kEs8311SystemReg12, 0x00);
+    writeCodecRegister(kEs8311GpReg45, 0x00);
+  }
+
+  if (i2sInitialized_) {
+    i2s_zero_dma_buffer(kI2sPort);
+    i2s_stop(kI2sPort);
+    i2s_driver_uninstall(kI2sPort);
+    i2sInitialized_ = false;
+  }
+
+  disableAudioRail();
+  available_ = false;
+}
+
 bool AudioManager::beep() {
   return tone(kDefaultBeepFrequencyHz, kDefaultBeepDurationMs, kDefaultToneAmplitude);
 }
@@ -129,6 +152,27 @@ bool AudioManager::enableAudioRail() {
 
   const uint8_t mask = static_cast<uint8_t>(1U << BoardConfig::TCA9554_PIN_AUDIO_ENABLE);
   output |= mask;
+  direction &= static_cast<uint8_t>(~mask);
+
+  return writeIoRegister(kIoOutputRegister, output) &&
+         writeIoRegister(kIoConfigRegister, direction);
+#endif
+}
+
+bool AudioManager::disableAudioRail() {
+#if defined(BOARD_AMOLED_18)
+  pinMode(BoardConfig::PIN_AUDIO_PA, OUTPUT);
+  digitalWrite(BoardConfig::PIN_AUDIO_PA, LOW);
+  return true;
+#else
+  uint8_t direction = 0xFF;
+  uint8_t output = 0xFF;
+  if (!readIoRegister(kIoConfigRegister, direction) || !readIoRegister(kIoOutputRegister, output)) {
+    return false;
+  }
+
+  const uint8_t mask = static_cast<uint8_t>(1U << BoardConfig::TCA9554_PIN_AUDIO_ENABLE);
+  output &= static_cast<uint8_t>(~mask);
   direction &= static_cast<uint8_t>(~mask);
 
   return writeIoRegister(kIoOutputRegister, output) &&

@@ -778,7 +778,6 @@ void App::begin() {
   }
 
   touchInitialized_ = touch_.begin();
-  audio_.begin();
   motion_.begin();
   focusTimer_.begin(&motion_);
   loadFocusTimerPreferences();
@@ -6382,8 +6381,10 @@ void App::playFocusTimerCue(FocusTimer::Cue cue) {
   }
 
   if (played) {
+    audio_.end();
     return;
   }
+  audio_.end();
 
   // Audio path unavailable: fall back to a brief backlight flash where a real backlight exists.
 #if defined(BOARD_AMOLED_18)

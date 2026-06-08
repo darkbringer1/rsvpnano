@@ -6,6 +6,7 @@
 class AudioManager {
  public:
   bool begin();
+  void end();
   bool beep();
   bool tone(uint32_t frequencyHz, uint32_t durationMs);
   bool tone(uint32_t frequencyHz, uint32_t durationMs, int16_t amplitude);
@@ -25,6 +26,7 @@ class AudioManager {
   static constexpr i2s_port_t kI2sPort = I2S_NUM_0;
 
   bool enableAudioRail();
+  bool disableAudioRail();
   bool initI2s();
   bool initCodec();
   bool configureCodec();
