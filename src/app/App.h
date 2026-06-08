@@ -168,6 +168,7 @@ class App {
   bool isBatteryBadgeTap(uint16_t x, uint16_t y) const;
   bool isPreviousSentenceTap(uint16_t x, uint16_t y) const;
   bool isActivelyReading() const;
+  bool shouldStayAwake() const;  // reading or running timer -> block all idle sleep/dim
   bool readerFooterVisible() const;
   DisplayManager::ReaderChrome readerChrome() const;
   String readerFooterStatusLabel() const;

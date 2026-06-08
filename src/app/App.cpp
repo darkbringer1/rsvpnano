@@ -2008,8 +2008,10 @@ void App::updateBrightnessToast(uint32_t nowMs) {
 }
 
 void App::updateAutoDim(uint32_t nowMs) {
-  // Only dim when the user is idle in Paused or Menu — never during active reading.
-  const bool dimEligible = (state_ == AppState::Paused || state_ == AppState::Menu);
+  // Only dim when the user is idle in Paused or Menu — never during active
+  // reading or while a focus timer is running.
+  const bool dimEligible =
+      !shouldStayAwake() && (state_ == AppState::Paused || state_ == AppState::Menu);
   if (!dimEligible) {
     if (autoDimActive_) {
       restoreFromAutoDim(nowMs);
@@ -2103,6 +2105,14 @@ bool App::isPreviousSentenceTap(uint16_t x, uint16_t y) const {
 }
 
 bool App::isActivelyReading() const { return state_ == AppState::Playing; }
+
+// True while the device must stay fully awake: an active reading session or a
+// running focus timer. Blocks every idle path — screensaver standby, deep
+// power-save, and auto-dim — because the timer counts down on its own screen
+// with no touch to refresh activity, and reading should never blank.
+bool App::shouldStayAwake() const {
+  return isActivelyReading() || focusTimer_.isRunning();
+}
 
 DisplayManager::ReaderChrome App::readerChrome() const {
   DisplayManager::ReaderChrome chrome;
@@ -4645,6 +4655,12 @@ void App::noteActivity(uint32_t nowMs) {
 
 #if defined(BOARD_AMOLED_18)
 void App::updateIdleStandby(uint32_t nowMs) {
+  // Never blank while reading or a focus timer is running (the timer screen
+  // counts down with no touch to refresh activity).
+  if (shouldStayAwake()) {
+    lastActivityMs_ = nowMs;
+    return;
+  }
   // Only the resting states accrue idle time. Reading (Playing) holds activity
   // alive via continuous touch; utility/sync/boot screens manage their own life.
   if (state_ != AppState::Paused && state_ != AppState::Menu &&
@@ -4746,6 +4762,10 @@ void App::exitPowerSaving(uint32_t nowMs) {
 void App::updateDeepStandbyIdle(uint32_t nowMs) {
   if (deepStandbyDelayMs_ == 0 || state_ == AppState::PowerSaving) {
     return;  // disabled, or already there.
+  }
+  if (shouldStayAwake()) {  // reading / running timer -> stay fully on
+    lastActivityMs_ = nowMs;
+    return;
   }
   // Eligible from the resting states and from the screensaver standby. Other
   // states (reading, sync, USB, boot) keep their own activity alive elsewhere.
