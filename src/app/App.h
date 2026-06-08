@@ -276,6 +276,8 @@ class App {
   void handleAmoledStandbyWake(uint32_t nowMs);
   void enterPowerSaving(uint32_t nowMs);
   void exitPowerSaving(uint32_t nowMs);
+  void handlePowerSavingWake(uint32_t nowMs);
+  void enterAmoledPowerOff(uint32_t nowMs);
   void enterAmoledDeepSleepStandby(uint32_t nowMs, bool showGoodbye);
   void updateDeepStandbyIdle(uint32_t nowMs);
   String deepStandbyDelayLabel() const;

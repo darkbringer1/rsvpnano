@@ -838,8 +838,10 @@ void App::begin() {
 //     hold >= 900ms        -> cycle brightness
 //     tap in USB/Sync page -> exit back to main menu
 //   PWR  (AXP2101 PWRKEY, updatePmuPowerKey):
-//     tap (short press)    -> deep-sleep standby (BOOT wakes)
-//     hold (long press ~4s)-> deep-sleep standby ("Goodbye", BOOT wakes)
+//     tap (short press)    -> toggle soft sleep (panel off, MCU awake;
+//                             tap PWR / press BOOT / touch wakes instantly)
+//     hold (long press)    -> power off ("Goodbye", AXP rail cut; long-press
+//                             PWR cold-boots. USB attached -> BOOT-wake fallback)
 //
 // Bar board (non-AMOLED) — 2 GPIO buttons:
 //   BOOT (handleBootButton):  tap -> brightness;  hold >=900ms -> theme
@@ -872,16 +874,19 @@ void App::update(uint32_t nowMs) {
 
 #if defined(BOARD_AMOLED_18)
   if (state_ == AppState::PowerSaving) {
-    // Fallback only: normal AMOLED standby enters ESP deep sleep from
-    // enterAmoledDeepSleepStandby(). If deep sleep failed to start, stay dark and
-    // idle instead of running the full UI loop.
+    // Soft sleep: panel is off but the MCU stays awake. PWR-tap wake already ran
+    // in dispatchButtons(); here we watch BOOT + touch. Stay parked otherwise.
+    handlePowerSavingWake(nowMs);
+    if (state_ != AppState::PowerSaving) {
+      return;  // woke this frame; resume normal handling next tick
+    }
     if (nowMs - lastStateLogMs_ > 1500) {
       lastStateLogMs_ = nowMs;
       ESP_LOGI(kAppTag, "state=%s", stateName(state_));
       Serial.printf("[app] state=%s ms=%lu\n", stateName(state_),
                     static_cast<unsigned long>(nowMs));
     }
-    delay(250);
+    delay(40);  // ~25 Hz poll keeps PWR/BOOT/touch responsive while idling low
     return;
   }
 #endif
@@ -1411,9 +1416,11 @@ void App::handleBootButton(uint32_t nowMs) {
 
 #if defined(BOARD_AMOLED_18)
 void App::updatePmuPowerKey(uint32_t nowMs) {
-  // AXP2101 PWR button: a short tap enters deep-sleep standby; a long press
-  // shows Goodbye and enters the same low-power standby. PWRKEY cannot wake
-  // this board from AXP2101 rail-cut in battery testing; BOOT wakes deep sleep.
+  // AXP2101 PWR button (iPhone-style side button):
+  //   short tap  -> toggle soft sleep (panel off, MCU stays awake; tap again,
+  //                 a BOOT press, or a screen touch wakes instantly)
+  //   long press -> power off the device (AXP rail cut; long-press PWR boots it
+  //                 again). Hold always means off, awake or soft-asleep.
   if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_) {
     return;
   }
@@ -1426,20 +1433,13 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
   }
   switch (event) {
     case BoardConfig::PowerKeyEvent::LongPress:
+      // Hold = power off, from any state. The hold itself is the confirmation.
       lastPowerButtonActionMs_ = nowMs;
-      if (state_ == AppState::PowerSaving) {
-        if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
-          exitPowerSaving(nowMs);
-        }
-      } else {
-        // Hold = deep-sleep standby. The hold itself is the confirmation, so no prompt.
-        Serial.println("[power] PWRKEY long press -> deep-sleep standby");
-        enterPowerOff(nowMs);
-      }
+      Serial.println("[power] PWRKEY long press -> power off");
+      enterPowerOff(nowMs);
       break;
     case BoardConfig::PowerKeyEvent::ShortPress:
-      // Tap enters low-power standby. BOOT wakes because PWRKEY is not an ESP
-      // wake GPIO on the verified hardware path.
+      // Tap toggles soft sleep.
       lastPowerButtonActionMs_ = nowMs;
       if (state_ == AppState::PowerSaving) {
         if (nowMs - powerSaveEnteredMs_ >= kStandbyWakeGraceMs) {
@@ -4875,7 +4875,30 @@ void App::enterPowerSaving(uint32_t nowMs) {
     return;
   }
 
-  enterAmoledDeepSleepStandby(nowMs, false);
+  // Soft sleep (iPhone "lock screen"): blank the AMOLED panel but keep the MCU
+  // running so a PWR tap, BOOT press, or screen touch wakes instantly. No ESP
+  // deep sleep here — that is reserved for power-off (enterAmoledPowerOff).
+  powerSaveReturnState_ = (state_ == AppState::Menu) ? AppState::Menu : AppState::Paused;
+  if (state_ == AppState::Playing) {
+    saveReadingPosition(true);
+  }
+  pausedTouch_.active = false;
+  pausedTouchIntent_ = TouchIntent::None;
+  touchPlayHeld_ = false;
+  playLocked_ = false;
+  pauseAtSentenceEndRequested_ = false;
+  contextViewVisible_ = false;
+  wpmFeedbackVisible_ = false;
+  batteryWarningOverlayVisible_ = false;
+  powerSaveEnteredMs_ = nowMs;
+  setState(AppState::PowerSaving, nowMs);  // drops CPU to cpuMhzStandby_, draws nothing
+
+  if (touchInitialized_) {
+    touch_.cancel();
+  }
+  motion_.end();
+  display_.prepareForSleep();  // panel off; MCU keeps polling buttons + touch
+  Serial.println("[power] soft sleep; tap PWR/BOOT or touch to wake");
 }
 
 void App::exitPowerSaving(uint32_t nowMs) {
@@ -4894,7 +4917,38 @@ void App::exitPowerSaving(uint32_t nowMs) {
   }
   setState(next, nowMs);
   noteActivity(nowMs);
-  Serial.println("[power] standby fallback off");
+  Serial.println("[power] soft sleep off");
+}
+
+void App::handlePowerSavingWake(uint32_t nowMs) {
+  if (state_ != AppState::PowerSaving) {
+    return;
+  }
+  // Brief grace so the gesture/idle that led here cannot bounce straight back.
+  // PWR-tap wake is handled in updatePmuPowerKey (also grace-gated).
+  if (nowMs - powerSaveEnteredMs_ < kStandbyWakeGraceMs) {
+    if (touchInitialized_) {
+      TouchEvent drop;
+      touch_.poll(drop);  // drain a held touch so it is not queued as a wake
+    }
+    return;
+  }
+
+  // Wake on a BOOT press...
+  if (button_.wasPressedEvent() || button_.wasReleasedEvent()) {
+    bootButtonLongPressHandled_ = true;
+    exitPowerSaving(nowMs);
+    return;
+  }
+
+  // ...or on any screen touch.
+  if (touchInitialized_) {
+    TouchEvent ev;
+    if (touch_.poll(ev) && ev.touched) {
+      touch_.cancel();
+      exitPowerSaving(nowMs);
+    }
+  }
 }
 
 void App::enterAmoledDeepSleepStandby(uint32_t nowMs, bool showGoodbye) {
@@ -4944,6 +4998,63 @@ void App::enterAmoledDeepSleepStandby(uint32_t nowMs, bool showGoodbye) {
   esp_deep_sleep_start();
 
   powerOffStarted_ = false;  // fallback only if deep sleep fails to start
+}
+
+void App::enterAmoledPowerOff(uint32_t nowMs) {
+  // True power-off (hold PWR): cut the AXP2101 main rail so the device is fully
+  // off. A long PWR press cold-boots it again (AXP power-on key). If the rail
+  // cannot be cut (USB VBUS is feeding the PMU), fall back to ESP deep sleep so
+  // a BOOT press still wakes the board instead of hanging here.
+  if (powerOffStarted_) {
+    return;
+  }
+  const bool wasSoftAsleep = (state_ == AppState::PowerSaving);
+  powerOffStarted_ = true;
+
+  if (state_ == AppState::Playing && nowMs >= playingStartedMs_) {
+    lifetimeReadMs_ += nowMs - playingStartedMs_;
+    lifetimeStatsDirty_ = true;
+  }
+  saveReadingPosition(true);
+  saveLifetimeStats();
+  pausedTouch_.active = false;
+  pausedTouchIntent_ = TouchIntent::None;
+  touchPlayHeld_ = false;
+  playLocked_ = false;
+  pauseAtSentenceEndRequested_ = false;
+  contextViewVisible_ = false;
+  wpmFeedbackVisible_ = false;
+  batteryWarningOverlayVisible_ = false;
+  menuScreen_ = MenuScreen::Main;
+  state_ = AppState::Sleeping;
+
+  if (wasSoftAsleep) {
+    display_.wakeFromSleep();  // panel was off in soft sleep; bring it back for Goodbye
+  }
+  display_.renderStatus("Goodbye", "", "");
+  delay(1000);
+
+  if (touchInitialized_) {
+    touch_.cancel();
+  }
+  motion_.end();
+  display_.prepareForSleep();
+  screensaver_.clearScreenOff();
+  activeBookStore_.close();
+  storage_.end();
+  WiFi.disconnect(true, false);
+  WiFi.mode(WIFI_OFF);
+
+  Serial.println("[power] AXP shutdown; long-press PWR to power on");
+  Serial.flush();
+  BoardConfig::pmuShutdown();  // cut the main rail (no-op while USB VBUS is present)
+
+  // Reached only if the rail did not drop (e.g. USB attached). Keep the board
+  // recoverable via BOOT rather than spinning the full UI loop.
+  esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(BoardConfig::PIN_BOOT_BUTTON), 0);
+  esp_deep_sleep_start();
+
+  powerOffStarted_ = false;  // fallback only if neither shutdown nor deep sleep took
 }
 
 void App::updateDeepStandbyIdle(uint32_t nowMs) {
@@ -5015,8 +5126,7 @@ void App::enterPowerOff(uint32_t nowMs) {
   }
 
 #if defined(BOARD_AMOLED_18)
-  Serial.println("[app] entering deep-sleep standby");
-  enterAmoledDeepSleepStandby(nowMs, state_ != AppState::PowerSaving);
+  enterAmoledPowerOff(nowMs);
   return;
 #endif
 
