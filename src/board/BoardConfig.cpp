@@ -294,13 +294,23 @@ void begin() {
   digitalWrite(PIN_LCD_BACKLIGHT, LOW);
 #endif
 
+  // Two different timeouts, distinguished only by capitalisation:
+  //   setTimeOut() -> TwoWire::_timeOutMillis, used by the I2C driver itself.
+  //   setTimeout() -> Stream::_timeout, used by readBytes(), and it defaults
+  //                   to 1000 ms.
+  // XPowersLib reads the AXP2101 through __wire->readBytes(), so with only
+  // setTimeOut() set, a PMU read on a disturbed bus busy-spun for a full second
+  // (Stream::timedRead polls in a loop rather than blocking), freezing the main
+  // loop at 99% CPU. Both must be set.
   Wire.begin(PIN_TOUCH_SDA, PIN_TOUCH_SCL);
   Wire.setClock(300000);
   Wire.setTimeOut(10);
+  Wire.setTimeout(10);
 
   Wire1.begin(PIN_I2C_SDA, PIN_I2C_SCL);
   Wire1.setClock(300000);
   Wire1.setTimeOut(10);
+  Wire1.setTimeout(10);
   holdBatteryPowerIfAvailable();
   disableBatteryAdcPathIfAvailable();
 

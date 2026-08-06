@@ -72,6 +72,10 @@ void TouchHandler::reinitialize() {
   Wire.end();
   Wire.begin(BoardConfig::PIN_TOUCH_SDA, BoardConfig::PIN_TOUCH_SCL);
   Wire.setClock(300000);
+  // Restated so the bus keeps both bounds after a recovery, matching
+  // BoardConfig::begin(). See the note there on setTimeOut vs setTimeout.
+  Wire.setTimeOut(10);
+  Wire.setTimeout(10);
 
   Wire.beginTransmission(kAddress);
   const bool present = (Wire.endTransmission() == 0);
