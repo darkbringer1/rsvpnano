@@ -3,6 +3,8 @@
 #include <SD_MMC.h>
 #include <algorithm>
 
+#include "util/PerfProbe.h"
+
 static_assert(sizeof(IndexedBookStore::Header) == 52, "RIDX header size changed");
 static_assert(sizeof(IndexedBookStore::WordRecord) == 8, "RIDX word record size changed");
 static_assert(sizeof(IndexedBookStore::ChapterRecord) == 72, "RIDX chapter record size changed");
@@ -121,6 +123,7 @@ bool IndexedBookStore::readRecords(size_t startIndex, size_t count,
 }
 
 bool IndexedBookStore::loadWordWindow(size_t index) const {
+  RSVP_PERF_SCOPE(perf::kWordWindowLoad);
   if (!isOpen() || index >= wordCount()) {
     return false;
   }

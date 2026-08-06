@@ -27,6 +27,8 @@ enum Probe : uint8_t {
   kPhaseFocusTimer,   // updateFocusTimer
   kPhaseTimeEstimate, // TimeEstimateEngine::update
   kPhaseButtons,      // dispatchButtons
+  kPhaseReader,       // updateReader (word advance + SD-backed word fetch)
+  kWordWindowLoad,    // IndexedBookStore::loadWordWindow (blocking SD refill)
   kProbeCount,
 };
 

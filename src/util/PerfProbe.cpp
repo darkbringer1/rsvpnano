@@ -20,7 +20,7 @@ struct Accumulator {
 const char *const kProbeNames[kProbeCount] = {
     "flush.convert", "flush.push",  "render.word",  "render.menu", "app.loop",
     "ph.battery",    "ph.orient",   "ph.touch",     "ph.focus",    "ph.timeEst",
-    "ph.buttons",
+    "ph.buttons",    "ph.reader",   "sd.wordWindow",
 };
 
 Accumulator gAccumulators[kProbeCount];

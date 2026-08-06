@@ -956,7 +956,10 @@ void App::update(uint32_t nowMs) {
     RSVP_PERF_SCOPE(perf::kPhaseFocusTimer);
     updateFocusTimer(nowMs);
   }
-  updateReader(nowMs);
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseReader);
+    updateReader(nowMs);
+  }
   {
     RSVP_PERF_SCOPE(perf::kPhaseTouch);
     handleTouch(nowMs);
