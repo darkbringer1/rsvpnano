@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "board/BoardConfig.h"
+#include "util/PerfProbe.h"
 
 #ifndef RSVP_USB_TRANSFER_ENABLED
 #define RSVP_USB_TRANSFER_ENABLED 0
@@ -54,6 +55,7 @@ constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
 constexpr uint32_t kFocusTimerActionCooldownMs = 1400;
 constexpr uint32_t kPowerButtonActionCooldownMs = 1100;
+constexpr uint32_t kPmuPollIntervalMs = 40;  // 25 Hz is ample for a button
 constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
@@ -867,7 +869,10 @@ void App::dispatchButtons(uint32_t nowMs) {
 }
 
 void App::update(uint32_t nowMs) {
-  dispatchButtons(nowMs);
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseButtons);
+    dispatchButtons(nowMs);
+  }
   if (powerOffStarted_) {
     return;
   }
@@ -891,7 +896,11 @@ void App::update(uint32_t nowMs) {
   }
 #endif
 
-  const bool batteryChanged = updateBatteryStatus(nowMs);
+  bool batteryChanged = false;
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseBattery);
+    batteryChanged = updateBatteryStatus(nowMs);
+  }
   if (powerOffStarted_) {
     return;
   }
@@ -939,16 +948,28 @@ void App::update(uint32_t nowMs) {
   updateState(nowMs);
   loadPendingBootBook(nowMs);
   maybeOpenUpdateConfirm(nowMs);
-  updateAutoOrientation(nowMs);
-  updateFocusTimer(nowMs);
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseOrientation);
+    updateAutoOrientation(nowMs);
+  }
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseFocusTimer);
+    updateFocusTimer(nowMs);
+  }
   updateReader(nowMs);
-  handleTouch(nowMs);
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseTouch);
+    handleTouch(nowMs);
+  }
   updateWpmFeedback(nowMs);
   updateBrightnessToast(nowMs);
   updateAutoDim(nowMs);
   updateBatteryRuntimeLabel(nowMs);
   maybeSaveReadingPosition(nowMs);
-  timeEstimate_.update(nowMs, currentBookPath_);
+  {
+    RSVP_PERF_SCOPE(perf::kPhaseTimeEstimate);
+    timeEstimate_.update(nowMs, currentBookPath_);
+  }
 #if defined(BOARD_AMOLED_18)
   updateDeepStandbyIdle(nowMs);  // deep standby auto-enter (own configurable delay)
   if (state_ == AppState::PowerSaving) {
@@ -1424,6 +1445,17 @@ void App::updatePmuPowerKey(uint32_t nowMs) {
   if (state_ == AppState::Booting || state_ == AppState::Sleeping || powerOffStarted_) {
     return;
   }
+
+  // pmuPollPowerKey() is a 3-register I2C read of the AXP2101. Left ungated it
+  // ran once per main-loop tick (~258 Hz) and measured 1.5 ms per call — 39% of
+  // all CPU time, purely to ask whether a button was pressed. The PMU latches
+  // PWRKEY IRQ bits until they are cleared, so polling slower drops nothing; it
+  // only adds up to one interval of latency to a tap, which is imperceptible.
+  // 40 ms matches the 25 Hz poll the PowerSaving path already settled on.
+  if (nowMs - lastPmuPollMs_ < kPmuPollIntervalMs) {
+    return;
+  }
+  lastPmuPollMs_ = nowMs;
 
   const BoardConfig::PowerKeyEvent event = BoardConfig::pmuPollPowerKey();
   if (event != BoardConfig::PowerKeyEvent::None && lastPowerButtonActionMs_ != 0 &&
