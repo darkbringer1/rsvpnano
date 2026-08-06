@@ -5,6 +5,7 @@
 
 #include "app/App.h"
 #include "board/BoardConfig.h"
+#include "util/PerfProbe.h"
 
 App app;
 
@@ -30,7 +31,13 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
-  app.update(now);
+  {
+    RSVP_PERF_SCOPE(perf::kAppLoop);
+    app.update(now);
+  }
+  // Reported here rather than inside update() because update() has many early
+  // returns (standby, power-saving, battery overlay) that would skip the report.
+  perf::report(now);
   // Yield to the RTOS idle task so the CPU is not 100% busy-spinning.
   // All timing in update() is millis()-based so 1 ms is imperceptible.
   delay(1);
