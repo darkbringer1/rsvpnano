@@ -200,6 +200,10 @@ class DisplayManager {
   void drawMenuItem(const String &item, int y, bool selected);
   void applyBrightness();
   void flushScaledFrame(int scale, int virtualWidth, int virtualHeight);
+  // Fast path for scale == 1: fills one txBuffer_ chunk reading virtualFrame_
+  // sequentially. Returns false if the orientation has no specialization, in
+  // which case the caller falls back to the generic per-pixel mapping loop.
+  bool convertChunkUnscaled(int nativeYStart, int nativeRows, int virtualWidth, int virtualHeight);
   void flushFullWidthLogicalBand(int yStart, int yEnd);
   int logicalWidth() const;
   int logicalHeight() const;

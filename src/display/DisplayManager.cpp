@@ -16,6 +16,7 @@
 #include "display/EmbeddedSerifFont70.h"
 #include "display/axs15231b.h"
 #include "text/LatinText.h"
+#include "util/PerfProbe.h"
 
 namespace {
 constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -1872,37 +1873,132 @@ void DisplayManager::applyBrightness() {
   axs15231bSetBacklight(true);
 }
 
+bool DisplayManager::convertChunkUnscaled(int nativeYStart, int nativeRows, int virtualWidth,
+                                          int virtualHeight) {
+  // virtualFrame_ lives in PSRAM (392 KB, too big for internal SRAM), where a
+  // cache miss costs far more than an SRAM access. The generic loop below walks
+  // the destination in order, which in landscape means stepping the *source* by
+  // a full row (896 B) per pixel — a fresh cache line for every one of the
+  // 164,864 pixels. These paths invert that: they walk virtualFrame_
+  // sequentially and let the scattered writes land in txBuffer_, which is
+  // internal DMA SRAM and uncached, so stride costs nothing there.
+  const int rowPixels = kPanelNativeWidth;
+
+  switch (uiOrientation_) {
+    case BoardConfig::UiOrientation::Portrait: {
+      // logicalX == physicalX, logicalY == physicalY: straight row copy.
+      if (virtualWidth < kPanelNativeWidth || virtualHeight < nativeYStart + nativeRows) {
+        return false;
+      }
+      for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
+        const int logicalY = nativeYStart + localNativeY;
+        std::memcpy(txBuffer_ + localNativeY * rowPixels,
+                    virtualFrame_ + logicalY * kVirtualBufferWidth,
+                    static_cast<size_t>(rowPixels) * sizeof(uint16_t));
+      }
+      return true;
+    }
+
+    case BoardConfig::UiOrientation::PortraitFlipped: {
+      // Both axes mirrored: row copy in reverse.
+      if (virtualWidth < kPanelNativeWidth || virtualHeight < kPanelNativeHeight) {
+        return false;
+      }
+      for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
+        const int logicalY = kPanelNativeHeight - 1 - (nativeYStart + localNativeY);
+        const uint16_t *srcRow = virtualFrame_ + logicalY * kVirtualBufferWidth;
+        uint16_t *dstRow = txBuffer_ + localNativeY * rowPixels;
+        for (int nativeX = 0; nativeX < rowPixels; ++nativeX) {
+          dstRow[nativeX] = srcRow[kPanelNativeWidth - 1 - nativeX];
+        }
+      }
+      return true;
+    }
+
+    case BoardConfig::UiOrientation::Landscape: {
+      // logicalX = kDisplayWidth-1-physicalY, logicalY = physicalX. A chunk of
+      // native rows is therefore a contiguous *column band* of virtualFrame_.
+      const int xBandStart = kDisplayWidth - nativeYStart - nativeRows;
+      const int xBandEnd = kDisplayWidth - 1 - nativeYStart;
+      if (virtualHeight < kPanelNativeWidth || xBandStart < 0 || xBandEnd >= virtualWidth) {
+        return false;
+      }
+      for (int logicalY = 0; logicalY < kPanelNativeWidth; ++logicalY) {
+        const uint16_t *srcRow = virtualFrame_ + logicalY * kVirtualBufferWidth;
+        uint16_t *dstColumn = txBuffer_ + logicalY;  // nativeX == logicalY
+        int localNativeY = nativeRows - 1;
+        for (int logicalX = xBandStart; logicalX <= xBandEnd; ++logicalX, --localNativeY) {
+          dstColumn[localNativeY * rowPixels] = srcRow[logicalX];
+        }
+      }
+      return true;
+    }
+
+    case BoardConfig::UiOrientation::LandscapeFlipped: {
+      // logicalX = physicalY, logicalY = kDisplayHeight-1-physicalX.
+      const int xBandEnd = nativeYStart + nativeRows - 1;
+      if (virtualHeight < kPanelNativeWidth || xBandEnd >= virtualWidth) {
+        return false;
+      }
+      for (int logicalY = 0; logicalY < kPanelNativeWidth; ++logicalY) {
+        const uint16_t *srcRow = virtualFrame_ + logicalY * kVirtualBufferWidth;
+        uint16_t *dstColumn = txBuffer_ + (kDisplayHeight - 1 - logicalY);  // nativeX
+        int localNativeY = 0;
+        for (int logicalX = nativeYStart; logicalX <= xBandEnd; ++logicalX, ++localNativeY) {
+          dstColumn[localNativeY * rowPixels] = srcRow[logicalX];
+        }
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void DisplayManager::flushScaledFrame(int scale, int virtualWidth, int virtualHeight) {
   tickerPlaybackFrameActive_ = false;
   if (!brightnessOverlayText_.isEmpty()) {
     drawBrightnessToastBadge(brightnessOverlayText_);
   }
+  uint32_t convertUs = 0;
+  uint32_t pushUs = 0;
   for (int nativeYStart = 0; nativeYStart < kPanelNativeHeight;
        nativeYStart += kMaxChunkPhysicalRows) {
     const int nativeRows = std::min(kMaxChunkPhysicalRows, kPanelNativeHeight - nativeYStart);
-    std::memset(txBuffer_, 0, txBufferBytes_);
+    const int64_t convertStartUs = perf::nowUs();
 
-    for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
-      const int nativeY = nativeYStart + localNativeY;
-      uint16_t *dstRow = txBuffer_ + localNativeY * kPanelNativeWidth;
+    if (scale != 1 || !convertChunkUnscaled(nativeYStart, nativeRows, virtualWidth, virtualHeight)) {
+      std::memset(txBuffer_, 0, txBufferBytes_);
 
-      for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
-        int logicalX = 0;
-        int logicalY = 0;
-        mapPhysicalToLogical(uiOrientation_, nativeX, nativeY, logicalX, logicalY);
-        const int sourceX = logicalX / scale;
-        const int sourceY = logicalY / scale;
+      for (int localNativeY = 0; localNativeY < nativeRows; ++localNativeY) {
+        const int nativeY = nativeYStart + localNativeY;
+        uint16_t *dstRow = txBuffer_ + localNativeY * kPanelNativeWidth;
 
-        if (sourceX >= 0 && sourceX < virtualWidth && sourceY >= 0 && sourceY < virtualHeight) {
-          dstRow[nativeX] = virtualFrame_[sourceY * kVirtualBufferWidth + sourceX];
+        for (int nativeX = 0; nativeX < kPanelNativeWidth; ++nativeX) {
+          int logicalX = 0;
+          int logicalY = 0;
+          mapPhysicalToLogical(uiOrientation_, nativeX, nativeY, logicalX, logicalY);
+          const int sourceX = logicalX / scale;
+          const int sourceY = logicalY / scale;
+
+          if (sourceX >= 0 && sourceX < virtualWidth && sourceY >= 0 && sourceY < virtualHeight) {
+            dstRow[nativeX] = virtualFrame_[sourceY * kVirtualBufferWidth + sourceX];
+          }
         }
       }
     }
+    convertUs += static_cast<uint32_t>(perf::nowUs() - convertStartUs);
 
-    if (!drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, txBuffer_)) {
-      return;
+    const int64_t pushStartUs = perf::nowUs();
+    const bool pushed =
+        drawBitmap(0, nativeYStart, kPanelNativeWidth, nativeYStart + nativeRows, txBuffer_);
+    pushUs += static_cast<uint32_t>(perf::nowUs() - pushStartUs);
+    if (!pushed) {
+      break;
     }
   }
+  perf::add(perf::kFlushConvert, convertUs);
+  perf::add(perf::kFlushPush, pushUs);
 }
 
 void DisplayManager::flushFullWidthLogicalBand(int yStart, int yEnd) {
@@ -1993,6 +2089,7 @@ void DisplayManager::renderRsvpWord(const String &word, const String &chapterLab
     return;
   }
 
+  RSVP_PERF_SCOPE(perf::kRenderWord);
   lastRenderKey_ = renderKey;
 
   const int scale = 1;
@@ -2035,6 +2132,7 @@ void DisplayManager::renderRsvpWordWithWpm(const String &word, uint16_t wpm,
     return;
   }
 
+  RSVP_PERF_SCOPE(perf::kRenderWord);
   lastRenderKey_ = renderKey;
 
   const int scale = 1;
@@ -2081,6 +2179,8 @@ void DisplayManager::renderPhantomRsvpWord(const String &beforeText, const Strin
     return;
   }
 
+  // Scoped after the early-out so skipped (unchanged-key) calls don't dilute the average.
+  RSVP_PERF_SCOPE(perf::kRenderWord);
   lastRenderKey_ = renderKey;
 
   if (fontSizeLevel == 1) {
@@ -2508,6 +2608,8 @@ void DisplayManager::renderPhantomRsvpWordWithWpm(const String &beforeText, cons
     return;
   }
 
+  RSVP_PERF_SCOPE(perf::kRenderWord);
+
   lastRenderKey_ = renderKey;
 
   if (fontSizeLevel == 1) {
@@ -2840,6 +2942,7 @@ void DisplayManager::renderMenu(const std::vector<String> &items, size_t selecte
     return;
   }
 
+  RSVP_PERF_SCOPE(perf::kRenderMenu);
   lastRenderKey_ = renderKey;
 
   const int scale = 1;
