@@ -11,7 +11,10 @@
 
 namespace {
 
-constexpr int kSpiFrequency = 40000000;
+// 80 MHz is the SH8601's rated QSPI ceiling and halves the ~16.5 ms it takes to
+// push a full 368x448 frame. If the panel ever shows tearing, shimmer, or
+// dropped pixel rows, drop this back to 40000000 first.
+constexpr int kSpiFrequency = 80000000;
 constexpr int kChunkPixels = 0x4000;  // 16384 px per DMA chunk
 static const char *kTag = "sh8601";
 
