@@ -159,6 +159,9 @@ constexpr uint8_t kAxpRegStatus1 = 0x00;         // bit3 = battery connected
 constexpr uint8_t kAxpRegAdcEnable = 0x30;       // bit0 = VBAT voltage ADC
 constexpr uint8_t kAxpRegVbatHigh = 0x34;        // [5:0] high bits of VBAT mV
 constexpr uint8_t kAxpRegVbatLow = 0x35;         // [7:0] low bits of VBAT mV
+constexpr uint8_t kAxpRegIntSts2 = 0x49;         // IRQ status 2 (write 1 to clear)
+constexpr uint8_t kAxpIrqPkeyLong = 0x04;        // INTSTS2 bit 2: PWRKEY long press
+constexpr uint8_t kAxpIrqPkeyShort = 0x08;       // INTSTS2 bit 3: PWRKEY short press
 bool gAxp2101Probed = false;
 bool gAxp2101Present = false;
 
@@ -446,23 +449,36 @@ PowerKeyEvent pmuPollPowerKey() {
   if (!pmuBeginInternal()) {
     return PowerKeyEvent::None;
   }
-  gPmu.getIrqStatus();  // latch current IRQ flags
-  PowerKeyEvent event = PowerKeyEvent::None;
-  if (gPmu.isPekeyLongPressIrq()) {
-    event = PowerKeyEvent::LongPress;
-  } else if (gPmu.isPekeyShortPressIrq()) {
-    event = PowerKeyEvent::ShortPress;
+  // Read INTSTS2 directly rather than via XPowersLib::getIrqStatus(). That path
+  // ends in Wire::readBytes(), which is bounded by Stream::_timeout, NOT by the
+  // I2C driver timeout set with Wire::setTimeOut(). Measured on device: one poll
+  // busy-spinning 1.001 s (Stream::timedRead polls in a loop rather than
+  // blocking), which froze the main loop at 99% CPU and was the reading stutter.
+  // Probing isolated it to this call alone -- the GPIO buttons, the IMU and touch
+  // all stayed under 1.4 ms through the same windows, and they are exactly the
+  // paths that use requestFrom()/read() instead of readBytes().
+  // axpReadReg()/axpWriteReg() use that same bounded pattern.
+  uint8_t status = 0;
+  if (!axpReadReg(kAxpRegIntSts2, status)) {
+    return PowerKeyEvent::None;
   }
-  // clearIrqStatus() writes 0xFF to every INTSTS reg (write-1-to-clear), wiping
-  // ALL pending bits, not just the ones we read above. The AXP2101 latches the
-  // PWRKEY short-press IRQ on key *release*; if that release lands in the window
-  // between getIrqStatus() and this clear, an unconditional clear would erase the
-  // freshly-set bit before it is ever observed -> the wake tap is silently lost.
-  // Only short/long PKEY IRQs are enabled, so on an idle poll there is nothing to
-  // clear; skip it and let any bit set in the race window survive to the next
-  // poll, where it gets read and handled.
-  if (event != PowerKeyEvent::None) {
-    gPmu.clearIrqStatus();
+
+  PowerKeyEvent event = PowerKeyEvent::None;
+  uint8_t handledBits = 0;
+  if (status & kAxpIrqPkeyLong) {
+    event = PowerKeyEvent::LongPress;
+    handledBits = kAxpIrqPkeyLong;
+  } else if (status & kAxpIrqPkeyShort) {
+    event = PowerKeyEvent::ShortPress;
+    handledBits = kAxpIrqPkeyShort;
+  }
+
+  // Write-1-to-clear only the bit just consumed. clearIrqStatus() used to write
+  // 0xFF to every INTSTS register, which could erase a short press latched in the
+  // race window between the read and the clear (the AXP2101 latches PWRKEY short
+  // press on key *release*), silently losing a wake tap. A targeted clear cannot.
+  if (handledBits != 0) {
+    axpWriteReg(kAxpRegIntSts2, handledBits);
   }
   return event;
 #else
