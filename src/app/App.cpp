@@ -55,7 +55,8 @@ constexpr uint32_t kBrowseMaxWordsPerSecondPermille = 72000;
 constexpr uint32_t kFocusTimerCancelHoldMs = 850;
 constexpr uint32_t kFocusTimerActionCooldownMs = 1400;
 constexpr uint32_t kPowerButtonActionCooldownMs = 1100;
-constexpr uint32_t kPmuPollIntervalMs = 40;  // 25 Hz is ample for a button
+constexpr uint32_t kPmuPollIntervalMs = 40;     // 25 Hz is ample for a button
+constexpr uint32_t kOrientPollIntervalMs = 100;  // 10 Hz is ample for a flip
 constexpr size_t kContextPreviewWindowWords = 288;
 constexpr size_t kContextPreviewAnchorLeadWords = 112;
 constexpr size_t kContextPreviewMaxParagraphSnapWords = 48;
@@ -855,11 +856,19 @@ void App::begin() {
 // handler; see the per-state guards there.
 // ============================================================================
 void App::dispatchButtons(uint32_t nowMs) {
-  button_.update(nowMs);
-  powerButton_.update(nowMs);
+  {
+    RSVP_PERF_SCOPE(perf::kBtnGpio);
+    button_.update(nowMs);
+    powerButton_.update(nowMs);
 #if defined(BOARD_AMOLED_18)
-  handleAmoledButton(nowMs);   // BOOT
-  updatePmuPowerKey(nowMs);    // PWR (AXP2101 PWRKEY, polled from the PMU)
+    handleAmoledButton(nowMs);  // BOOT
+#endif
+  }
+#if defined(BOARD_AMOLED_18)
+  {
+    RSVP_PERF_SCOPE(perf::kBtnPmu);
+    updatePmuPowerKey(nowMs);  // PWR (AXP2101 PWRKEY, polled from the PMU)
+  }
 #else
   if (!handleStandbyCombo(nowMs)) {
     handleBootButton(nowMs);
@@ -6322,6 +6331,17 @@ void App::updateAutoOrientation(uint32_t nowMs) {
       state_ != AppState::Finished) {
     return;
   }
+
+  // readAccel() is an I2C transaction on the bus shared with touch and the PMU.
+  // Ungated it ran once per main-loop tick and measured 368-991 us, 21-29% of
+  // CPU load in Paused and Menu -- the states the device idles in most. The flip
+  // decision below is debounced by time (kAutoFlipStableMs), not by sample
+  // count, so 10 Hz still puts seven samples inside the stability window and
+  // costs at most one interval of extra latency on a flip.
+  if (nowMs - lastOrientPollMs_ < kOrientPollIntervalMs) {
+    return;
+  }
+  lastOrientPollMs_ = nowMs;
 
   float x = 0.0f;
   float y = 0.0f;

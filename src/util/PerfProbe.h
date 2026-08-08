@@ -29,6 +29,11 @@ enum Probe : uint8_t {
   kPhaseButtons,      // dispatchButtons
   kPhaseReader,       // updateReader (word advance + SD-backed word fetch)
   kWordWindowLoad,    // IndexedBookStore::loadWordWindow (blocking SD refill)
+  // Sub-splits for the 1 s stalls seen in kPhaseButtons and kPhaseOrientation.
+  kBtnGpio,           // button_/powerButton_/handleAmoledButton (GPIO only)
+  kBtnPmu,            // updatePmuPowerKey -> AXP2101 over I2C
+  kImuInit,           // MotionSensor::initImu (contains a 500 ms reset poll)
+  kImuRead,           // MotionSensor::readRegisters (plain I2C read)
   kProbeCount,
 };
 

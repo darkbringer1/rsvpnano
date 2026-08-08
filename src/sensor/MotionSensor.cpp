@@ -3,6 +3,7 @@
 #include <Wire.h>
 
 #include "board/BoardConfig.h"
+#include "util/PerfProbe.h"
 
 #if defined(BOARD_AMOLED_18)
 #define IMU_WIRE Wire  // QMI8658 shares the touch I2C bus (SDA15/SCL14) on the AMOLED board
@@ -38,6 +39,7 @@ void MotionSensor::end() {
 }
 
 bool MotionSensor::initImu() {
+  RSVP_PERF_SCOPE(perf::kImuInit);
   if (available_) {
     return true;
   }
@@ -111,6 +113,7 @@ bool MotionSensor::writeRegister(uint8_t reg, uint8_t value) {
 }
 
 bool MotionSensor::readRegisters(uint8_t startReg, uint8_t *buffer, size_t len) {
+  RSVP_PERF_SCOPE(perf::kImuRead);
   if (buffer == nullptr || len == 0 || len > 32) {
     return false;
   }
